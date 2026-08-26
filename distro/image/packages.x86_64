@@ -1,0 +1,81 @@
+# NTLinux Phase 0 archiso package list.
+#
+# Base: mirrors the upstream archiso `releng` profile's live-boot essentials
+# (not reproduced verbatim here — before building, diff this file against
+# https://gitlab.archlinux.org/archlinux/archiso releng/packages.x86_64 and
+# merge in whatever live-boot packages that profile carries at build time;
+# distro kernels/tooling move fast enough that pinning them here would rot).
+#
+# Everything below "NTLinux Phase 0 stack" is what this project adds, grouped
+# by docs/ARCHITECTURE.md section. See distro/packages/base.list for the
+# same list with per-line rationale.
+
+# --- archiso live-boot essentials (subset; diff against releng) ---
+base
+base-devel
+linux
+linux-firmware
+mkinitcpio
+mkinitcpio-archiso
+syslinux
+grub
+efibootmgr
+networkmanager
+sudo
+nano
+vim
+git
+
+# --- NTLinux Phase 0 stack ---
+# Scope note: KVM/VFIO/libvirt packages are deliberately NOT here. Phase 0
+# is the baseline gaming distro (docs/ARCHITECTURE.md section 43); the
+# ReactOS driver cell and its KVM/VFIO dependencies are Phase 4+
+# (ROADMAP.md). Keep this list matched to the Phase 0 "Deliver" list only.
+
+# Kernel-side NT sync (section 1.2, 53.3): ntsync is mainline in `linux`
+# since 6.14, no separate package needed — see kernel/config/ for the
+# config fragment that confirms it's enabled.
+
+# Graphics: Mesa + Vulkan (section 30)
+mesa
+vulkan-icd-loader
+vulkan-radeon
+vulkan-intel
+lib32-mesa
+lib32-vulkan-icd-loader
+lib32-vulkan-radeon
+lib32-vulkan-intel
+
+# Display/session (section 9) — Wayland compositor stack
+wayland
+xorg-xwayland
+plasma-meta
+sddm
+gamescope
+
+# Audio (section 31)
+pipewire
+pipewire-pulse
+pipewire-alsa
+pipewire-jack
+wireplumber
+
+# Input (section 32)
+game-devices-udev
+
+# Windows compatibility layer (section 3, 10, 38)
+wine
+wine-staging
+winetricks
+steam
+gamemode
+lib32-gamemode
+
+# graphics/dxvk, graphics/vkd3d-proton note (ADR-0002: consume, don't vendor):
+# Steam's own Proton already bundles matching DXVK/vkd3d-proton builds, so
+# no separate package is required for Proton games out of the box. For
+# non-Steam Wine prefixes, dxvk-bin/vkd3d-proton are AUR packages, not in
+# the official repos — an archiso build needs either (a) a local/
+# Chaotic-AUR-style package repo baked into pacman.conf, or (b) to leave
+# them to the user's package manager post-boot. Phase 0 ships without them
+# pre-baked; tracked as a Phase 0 follow-up in ROADMAP.md.

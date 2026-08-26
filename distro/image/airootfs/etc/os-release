@@ -1,0 +1,11 @@
+NAME="NTLinux"
+PRETTY_NAME="NTLinux (Phase 0)"
+ID=ntlinux
+ID_LIKE=arch
+BUILD_ID=rolling
+ANSI_COLOR="38;2;23;147;209"
+HOME_URL="https://github.com/Dankular/NTLinux"
+DOCUMENTATION_URL="https://github.com/Dankular/NTLinux/blob/main/docs/ARCHITECTURE.md"
+SUPPORT_URL="https://github.com/Dankular/NTLinux"
+BUG_REPORT_URL="https://github.com/Dankular/NTLinux/issues"
+LOGO=ntlinux-logo

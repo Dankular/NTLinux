@@ -1,0 +1,38 @@
+# NTLinux Phase 0 canonical package manifest, with rationale.
+#
+# This is the reference list `distro/image/packages.x86_64` should stay in
+# sync with. Package names are Arch Linux names (the current reference
+# distro foundation, per CLAUDE.md "Open decisions") — swap the family name
+# when/if a second reference target is added, the rationale column doesn't
+# change.
+#
+# format: <package> — <docs/ARCHITECTURE.md section> — <why>
+
+linux                   # 1.2, 53.3 — host kernel; carries CONFIG_NTSYNC since 6.14
+linux-firmware          # 1.2       — hardware support
+mesa                    # 30        — Linux GPU driver (default D3D-on-Vulkan target)
+lib32-mesa              # 11, 30    — WoW64 32-bit games
+vulkan-icd-loader       # 10, 30    — Vulkan loader for DXVK/vkd3d-proton
+lib32-vulkan-icd-loader # 11        — 32-bit Vulkan loader
+vulkan-radeon           # 30        — AMD Mesa Vulkan driver (vendor-conditional install)
+vulkan-intel            # 30        — Intel Mesa Vulkan driver (vendor-conditional install)
+lib32-vulkan-radeon     # 11, 30    — 32-bit variant
+lib32-vulkan-intel      # 11, 30    — 32-bit variant
+wayland                 # 9         — target compositor protocol for win32u backend
+xorg-xwayland           # 9         — X11 compatibility for apps/games not yet Wayland-native
+plasma-meta             # 9, 36     — default desktop-mode session (open decision, see CLAUDE.md)
+sddm                    # 9         — display manager
+gamescope               # 10, 36    — default game-mode session; HDR/VRR/FSR support
+pipewire                # 31        — WASAPI/XAudio2/DirectSound/MME target
+pipewire-pulse          # 31        — PulseAudio compat shim (some apps still expect it)
+pipewire-alsa           # 31        — ALSA compat shim
+pipewire-jack           # 31        — pro-audio compat shim
+wireplumber             # 31        — PipeWire session manager
+game-devices-udev       # 32        — controller udev rules for XInput/DirectInput/Raw Input bridge
+wine                    # 3.1       — Win32/Win64 user-mode runtime (upstream, unmodified for Phase 0)
+wine-staging            # 3.1       — staging patches, broader game compatibility
+winetricks              # 3.1       — DLL/component helper, useful until ntloader/Phase 1 lands
+steam                   # 10, 38    — bundles Proton, DXVK, vkd3d-proton per-game automatically
+gamemode                # 10        — CPU governor/priority tuning for games
+lib32-gamemode          # 10, 11    — 32-bit gamemode support library
+networkmanager          # (live-boot essential, not NT-specific)
