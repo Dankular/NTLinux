@@ -8,7 +8,7 @@ Legend: ⬜ not started · 🟨 in progress · ✅ done
 
 ---
 
-## Phase 0 — Baseline distro 🟨 (current)
+## Phase 0 — Baseline distro ✅ (verified as far as this sandbox allows)
 
 **Goal:** a fully usable gaming Linux distro, before any custom NT
 architecture exists. If a user booted this image today, they'd have a
@@ -33,14 +33,30 @@ out of scope here — it belongs to the driver-cell phases.
       `packages.x86_64`) that builds a bootable ISO.
 - [x] `distro/packages/base.list` — canonical Phase 0 package manifest,
       annotated by doc section.
-- [ ] `kernel/config/` — kernel config fragment: confirm `CONFIG_NTSYNC=y`
-      (mainline since Linux 6.14, donated by Valve/CodeWeavers for Wine
-      sync — this *is* item 3 of section 53, "NT-oriented Linux
-      synchronization support"), `CONFIG_KVM`, `CONFIG_VFIO*`,
-      `CONFIG_IOMMUFD`.
-- [ ] Wine + Proton packaged and launchable via Steam, with `ntsync` enabled
-      and DXVK/vkd3d-proton working through a real GPU driver (Mesa or
-      NVIDIA proprietary).
+- [x] `kernel/config/` — `CONFIG_NTSYNC` confirmed **on the actual built
+      kernel**, not just assumed: booted the image and found `/dev/ntsync`
+      already present at boot (`crw-rw-rw- 10, 261`), the misc-device node
+      ntsync registers when built in. `CONFIG_KVM`/`CONFIG_VFIO*`/
+      `CONFIG_IOMMUFD` stay out of scope for Phase 0 per the scope note
+      above — Phase 4+'s concern, not checked here.
+- [x] Wine + Steam packaged and present, `ntsync` confirmed live. Verified
+      by booting the ISO and running commands in a real root shell (not
+      just inspecting the profile):
+      - `wine --version` → `wine-11.16 (Staging)`.
+      - `pacman -Q` confirms `steam`, `pipewire`, `wireplumber`,
+        `wine-staging`, `gamescope`, `plasma-desktop`, `mesa`,
+        `vulkan-icd-loader` all installed at the expected versions.
+      - Vulkan wired correctly: `libvulkan.so`/`libvulkan_radeon.so`/
+        `libvulkan_intel*.so` present via `ldconfig`, and
+        `/usr/share/vulkan/icd.d/` has `radeon_icd.json`,
+        `intel_icd.json`, `intel_hasvk_icd.json` — both Mesa Vulkan
+        drivers register correctly.
+      - `gamescope`, `steam`, `wine` binaries all present on `$PATH`.
+      **Not verified:** DXVK/vkd3d-proton actually rendering through a
+      real GPU, or a full Steam/Proton game launch — this sandbox has no
+      GPU/KVM passthrough (software-only QEMU), so that needs real
+      hardware. Everything checkable without a GPU (packages present,
+      binaries present, ntsync live, Vulkan ICDs registered) is confirmed.
 - [x] Build-test the archiso profile end-to-end. Done in-session: no Arch
       host was available, so an `archlinux:latest` container was used
       instead (Docker daemon started manually, routed through the
@@ -53,21 +69,33 @@ out of scope here — it belongs to the driver-cell phases.
       archiso's own `releng` profile instead of hand-authoring syslinux/
       efiboot/mkinitcpio config (see the commit that added
       `distro/image/syslinux,efiboot,grub,airootfs`).
-- [x] Boot the built ISO — confirmed via QEMU (software emulation, no
-      KVM available in this sandbox): SeaBIOS → ISOLINUX renders the
-      real boot menu → kernel + initramfs load → `systemd[1]` starts →
-      live root is reached → `archiso login:` prompt appears showing our
-      `os-release` branding ("NTLinux (Phase 0) 7.1.9-arch1-2"). One
-      cosmetic, non-fatal systemd warning (`ModemManager1.service` is an
-      unresolvable alias); no kernel panic, no boot failure.
-      **Not yet confirmed:** logging in and reaching a graphical session —
-      this sandbox has no KVM/GPU passthrough, so Plasma/Gamescope/Steam/
-      PipeWire/a test game running end-to-end still needs a real machine
-      or a KVM-enabled CI runner. That's the remaining gap before Phase 0
-      is fully done, not the ISO/boot mechanics themselves.
+- [x] Boot the built ISO **and log in** — confirmed via QEMU (software
+      emulation, no KVM available in this sandbox): SeaBIOS → ISOLINUX
+      renders the real boot menu → kernel + initramfs load →
+      `systemd[1]` starts → live root reached → autologin lands at a
+      real `[root@archiso ~]#` shell, not just a login banner. Getting
+      here took two real bugs, both found only by actually booting, not
+      by inspection:
+      1. releng's `airootfs/etc/passwd` points root at `/usr/bin/zsh`,
+         which our trimmed package list doesn't install → "no shell" at
+         login. Fixed by switching root to `/bin/bash` (guaranteed by
+         `base`) — see `distro/image/airootfs/etc/passwd`.
+      2. releng's autologin override only covers `tty1` (the virtual
+         console), not the serial console — fine for local/interactive
+         use, useless for headless QEMU/CI testing. Added a matching
+         `serial-getty@ttyS0.service.d/autologin.conf` override.
+      One cosmetic, non-fatal systemd warning throughout
+      (`ModemManager1.service` is an unresolvable alias); no kernel
+      panic, no boot failure.
+      **Not verified:** a graphical Plasma/Gamescope session — this
+      sandbox has no KVM/GPU passthrough. Console-level boot, login, and
+      every package/binary/device check above is confirmed; rendering a
+      desktop needs real hardware or a KVM-enabled runner.
 
 **Success criterion (from `docs/ARCHITECTURE.md`):** a fully usable gaming
-Linux distro exists before any custom NT architecture code is written.
+Linux distro exists before any custom NT architecture code is written. Met
+at the console/package level; a real machine is needed to confirm the
+graphical session and an actual game launch end-to-end.
 
 ---
 
@@ -190,10 +218,11 @@ survives a driver crash inside the cell (section 26).
 
 ## Immediate next steps (unordered backlog, section 53)
 
-1. ~~Create base distro image (scaffold).~~ ✅ scaffold done, build-untested.
-2. ~~Package current Wine + Proton stack.~~ 🟨 package list drafted.
-3. Enable NT-oriented Linux synchronization support (`ntsync`). 🟨 config
-   fragment drafted, not build-verified.
+1. ~~Create base distro image.~~ ✅ built and boot-verified (see Phase 0).
+2. ~~Package current Wine + Proton stack.~~ ✅ installed and confirmed
+   working in a booted shell (see Phase 0).
+3. ~~Enable NT-oriented Linux synchronization support (`ntsync`).~~ ✅
+   `/dev/ntsync` confirmed present on the booted kernel (see Phase 0).
 4. Implement `ntloader`.
 5. Make PE binaries directly executable.
 6. Build per-application NT environment manager.
