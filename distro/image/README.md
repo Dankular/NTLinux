@@ -20,8 +20,19 @@ or `runtime/` may depend on anything specific to this image.
   verbatim from archiso's own `releng` reference profile
   (`gitlab.archlinux.org/archlinux/archiso` `configs/releng/`), per Rule 1:
   this is exactly the kind of bootloader/live-boot boilerplate to reuse, not
-  hand-author. `airootfs/etc/os-release` is the one file we override for
-  NTLinux branding; everything else is releng's as-is.
+  hand-author. Three deliberate overrides on top of releng's files:
+  - `airootfs/etc/os-release` — NTLinux branding.
+  - `airootfs/etc/passwd` — root's shell changed from releng's `zsh` to
+    `bash`, because `packages.x86_64` intentionally doesn't carry releng's
+    `zsh`/`grml-zsh-config` (not a Phase 0 deliverable); `bash` is
+    guaranteed present via `base`. Copying releng's `airootfs/etc/passwd`
+    unmodified would point root at a shell binary that doesn't exist on
+    this image (`no shell: No such file or directory` at login) — caught
+    by an actual boot test, not by inspection.
+  - `airootfs/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf`
+    — new file, not present in releng, mirrors the `tty1` autologin so the
+    live image can be driven headlessly over a serial line (QEMU `-serial`,
+    CI runners, cloud VMs without a virtual GPU).
 
 ## Build
 
