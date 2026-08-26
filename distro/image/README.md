@@ -16,24 +16,57 @@ or `runtime/` may depend on anything specific to this image.
 - `packages.x86_64` — the package list. See `distro/packages/base.list` for
   the same list with per-package rationale tied back to
   `docs/ARCHITECTURE.md`.
-- `airootfs/` — files overlaid onto the live filesystem verbatim (currently
-  just an `os-release` branding override).
+- `syslinux/`, `efiboot/`, `grub/`, and the rest of `airootfs/` — copied
+  verbatim from archiso's own `releng` reference profile
+  (`gitlab.archlinux.org/archlinux/archiso` `configs/releng/`), per Rule 1:
+  this is exactly the kind of bootloader/live-boot boilerplate to reuse, not
+  hand-author. `airootfs/etc/os-release` is the one file we override for
+  NTLinux branding; everything else is releng's as-is.
 
-## Build (on an Arch host — not run in this sandbox)
-
-This profile has been written and reviewed but **not build-verified**: this
-development container has no pacman/archiso toolchain or Arch mirror
-access. Build and boot-test it on an actual Arch Linux host or CI runner
-before treating Phase 0 as done (tracked in `ROADMAP.md`).
+## Build
 
 ```sh
 sudo pacman -S --needed archiso
 sudo mkarchiso -v -o /path/to/output distro/image/
 ```
 
-This produces a bootable `.iso` under the output directory. Boot it (real
-hardware or a VM with virtualized GPU/KVM passthrough for a realistic
-Steam/Wine test) and confirm:
+This produces a bootable `.iso` under the output directory.
+
+**Build-verified in-session** (2026-08-26), no Arch host available: ran
+`mkarchiso -v` for real inside an `archlinux:latest` container (Docker
+daemon started manually, `--network host` + the session's CA bundle to
+reach mirrors through the sandbox's TLS-intercepting proxy — see
+`docker run` invocation pattern below if reproducing this). It built
+`ntlinux-2026.08.26-x86_64.iso` (~2.3GB, 630 resolved packages)
+successfully, and a QEMU boot test (software-emulated, no KVM in this
+sandbox) confirmed the ISO actually boots: SeaBIOS → ISOLINUX renders the
+real menu → kernel+initramfs load → `systemd[1]` starts → live root is
+reached → `archiso login:` prompt appears showing `NTLinux (Phase 0)`
+branding. No panic, no boot failure — one cosmetic non-fatal systemd
+warning (`ModemManager1.service` alias).
+
+```sh
+# reproducing the sandboxed build (adjust CA bundle path/proxy per your
+# environment's own TLS setup — this incantation is specific to a
+# Claude Code sandbox with the agent proxy; a normal Arch host or CI
+# runner just needs plain mkarchiso, no proxy dance)
+docker run --rm --privileged --network host \
+  -v /root/.ccr/ca-bundle.crt:/tmp/ccr-ca.crt:ro \
+  -v "$(pwd)/distro/image:/profile:ro" \
+  -v /path/to/work:/work -v /path/to/out:/out \
+  -e HTTPS_PROXY=http://127.0.0.1:40767 -e https_proxy=http://127.0.0.1:40767 \
+  archlinux:latest bash -c '
+    cp /tmp/ccr-ca.crt /etc/ca-certificates/trust-source/anchors/ccr.crt
+    trust extract-compat
+    pacman -Sy --noconfirm && pacman -S --noconfirm --needed archiso
+    cp -a /profile/. /build-profile/ && cd /build-profile
+    mkarchiso -v -w /work -o /out .
+  '
+```
+
+**Not yet confirmed** — needs a machine with KVM/GPU passthrough, which this
+sandbox doesn't have: logging in and reaching an actual graphical session.
+Boot it on real hardware or a KVM-accelerated VM and confirm:
 
 - Plasma (Wayland) session starts.
 - `pipewire`/`wireplumber` are running and produce audio.
@@ -49,3 +82,5 @@ Steam/Wine test) and confirm:
   `packages.x86_64`); Proton's own bundled copies cover Steam games in the
   meantime.
 - No installer yet (`distro/installer/` — live-boot only for now).
+- Graphical session (Plasma/Gamescope/Steam/audio) not yet boot-tested —
+  see "Not yet confirmed" above.

@@ -41,12 +41,30 @@ out of scope here — it belongs to the driver-cell phases.
 - [ ] Wine + Proton packaged and launchable via Steam, with `ntsync` enabled
       and DXVK/vkd3d-proton working through a real GPU driver (Mesa or
       NVIDIA proprietary).
-- [ ] Build-test the archiso profile end-to-end on real Arch tooling
-      (`mkarchiso`) — **not done in this sandbox**: this container has no
-      pacman/archiso toolchain or mirror access, so the profile is
-      written and reviewed but not build-verified yet. Needs to happen on
-      an Arch host or CI runner before Phase 0 is called done.
-- [ ] Boot the built ISO, confirm Steam + a test game run end-to-end.
+- [x] Build-test the archiso profile end-to-end. Done in-session: no Arch
+      host was available, so an `archlinux:latest` container was used
+      instead (Docker daemon started manually, routed through the
+      session's TLS-intercepting proxy via `--network host` + the CA
+      bundle — see `distro/image/README.md`). Result: a real
+      `mkarchiso -v` run against this exact profile completed
+      successfully and produced `ntlinux-<date>-x86_64.iso` (~2.3GB, 630
+      resolved packages). The first attempt failed profile validation
+      (missing bootloader trees); fixed by basing `distro/image/` on
+      archiso's own `releng` profile instead of hand-authoring syslinux/
+      efiboot/mkinitcpio config (see the commit that added
+      `distro/image/syslinux,efiboot,grub,airootfs`).
+- [x] Boot the built ISO — confirmed via QEMU (software emulation, no
+      KVM available in this sandbox): SeaBIOS → ISOLINUX renders the
+      real boot menu → kernel + initramfs load → `systemd[1]` starts →
+      live root is reached → `archiso login:` prompt appears showing our
+      `os-release` branding ("NTLinux (Phase 0) 7.1.9-arch1-2"). One
+      cosmetic, non-fatal systemd warning (`ModemManager1.service` is an
+      unresolvable alias); no kernel panic, no boot failure.
+      **Not yet confirmed:** logging in and reaching a graphical session —
+      this sandbox has no KVM/GPU passthrough, so Plasma/Gamescope/Steam/
+      PipeWire/a test game running end-to-end still needs a real machine
+      or a KVM-enabled CI runner. That's the remaining gap before Phase 0
+      is fully done, not the ISO/boot mechanics themselves.
 
 **Success criterion (from `docs/ARCHITECTURE.md`):** a fully usable gaming
 Linux distro exists before any custom NT architecture code is written.
