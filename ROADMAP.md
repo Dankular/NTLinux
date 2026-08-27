@@ -240,7 +240,9 @@ operations no longer use the normal Wine (wineserver) path. **Not met yet
       the *complete* NT-native surface to route (not just the handful
       `ntabi` covers today) up front, from real Windows ground truth
       rather than discovering gaps one crash at a time, is what
-      `tooling/compat-db/ntexports/` is for — see its README.
+      `tooling/compat-db/ntexports/` is for — see its README. This item
+      now has a real home: Phase 12 bundles it with the two NT object
+      types (Thread, APC) that are themselves blocked on it existing.
 
 **What Phase 2 actually proves, stated precisely:** the protocol, the
 daemon, and the client library are real and correct — genuine NT object
@@ -314,24 +316,16 @@ glossed over — same honest boundary as Phase 2.
       process that is a child of the *test harness*, not of `ntd` —
       proving the mechanism actually generalizes, not just working by
       coincidence on a child.
-- [ ] **Thread objects — not implemented, deferred with reasoning.**
-      A meaningful NT Thread object needs an identity tied to a real
-      thread's execution context (suspend/resume, alertable state, APC
-      queue) that only exists once real Windows/Wine thread creation
-      routes through `ntabi` — which needs the same ntdll integration
-      Phase 2 already deferred. Building a Thread object type now would
-      mean either faking that identity (misleading) or duplicating a
-      process object with a different name (not actually Thread
-      semantics). Revisit once Phase 2's ntdll integration lands.
-- [ ] **APC (Asynchronous Procedure Call) support — not implemented,
-      deferred with reasoning.** Queuing a callback to run on another
-      thread requires real control over that thread's execution context
-      at its alertable-wait points — not something a userspace daemon can
-      provide to an arbitrary client thread without the client's own
-      runtime (ntdll) cooperating. Same root blocker as Thread objects:
-      no real thread identity to queue an APC *to* without ntdll
-      integration. Not attempted rather than built as something that
-      only superficially resembles APC semantics.
+- [ ] **Thread objects and APC support — moved to Phase 12, not
+      abandoned.** Both need a real thread execution context that only
+      exists once real Windows/Wine thread creation routes through
+      `ntabi` — the same ntdll integration Phase 2 deferred. Rather than
+      leave them as permanently-unchecked items sitting in a phase
+      they can't actually be finished in, they now have a real home:
+      Phase 12 bundles them with the ntdll integration work they're
+      blocked on, so all three land together once that integration
+      exists. See Phase 12 below. Not counted toward this phase's own
+      completion — kept visible here as a pointer, not silently dropped.
 
 **Verified live, end to end, in this session:** 38/38 test checks passing
 (`ntabi/tests/test_ntabi.c`, `make check`), including six genuinely
@@ -438,6 +432,55 @@ Linux driver is meaningfully behind.
 non-primary GPU inside the driver cell, rendering output reaches the host
 compositor through the existing VFIO/IOMMU-mediated path, and Linux
 survives a driver crash inside the cell (section 26).
+
+---
+
+## Phase 12 — ntdll integration & remaining NT object types ⬜
+
+Two things bundled together deliberately, not because they're the same
+kind of work, but because the second is blocked on the first: real Wine
+`ntdll` integration (Phase 2's original, still-open "known gap" — patching
+Wine's actual sync implementation, `dlls/ntdll/unix/sync.c` upstream, to
+call into `libntabi` for some operations, then rebuilding Wine from source
+and validating against Wine's own test suite), and the two NT object types
+Phase 3 explicitly deferred pending exactly that integration: **Thread
+objects** and **APC support**. Both need a real per-thread execution
+context that only exists once real Windows/Wine thread creation routes
+through `ntabi` — there's no honest way to prototype "wait on a thread
+handle" or "queue an APC to a thread" against a thread `ntd` never created
+and has no execution context for.
+
+**Task breakdown:**
+
+- [ ] Patch Wine's `ntdll` to route selected sync operations (the ones
+      `ntabi`/`ntd` already implement — Event/Mutant/Semaphore/Section/
+      I/O Completion port/Process wait) through `libntabi` instead of
+      wineserver. Requires a real Wine source checkout and full build
+      (30-60+ minutes, gigabytes of dependencies — out of reach in this
+      sandbox so far, same limitation noted in Phase 2).
+- [ ] Validate against Wine's own test suite (`dlls/ntdll/tests/`,
+      `dlls/kernel32/tests/` sync-related suites) — passing is the bar,
+      not just "it links."
+- [ ] Thread objects: create/open, wait-for-thread-exit semantics,
+      suspend count tracking — real semantics against a real Wine thread,
+      not a synthetic stand-in.
+- [ ] APC support: user-mode and kernel-mode APC queueing and delivery
+      timing (queued at `NtQueueApcThread`, delivered at the next
+      alertable wait or user-mode APC dispatch) — this is the item most
+      dependent on real thread execution context existing first; don't
+      attempt it before the thread-object work above lands.
+- [ ] Measure the two success criteria Phases 2 and 3 both left
+      unverifiable for the same reason: reduced wineserver IPC traffic,
+      and Wine's test suites staying green with `ntabi`/`ntd` in the loop
+      instead of wineserver for the routed operations.
+
+**Success criterion:** Wine's own test suites continue passing with
+`ntabi`/`ntd` handling the routed operations instead of wineserver
+(Phase 2's original success criterion, finally measurable) + a measured
+reduction in wineserver IPC traffic (Phase 3's original success
+criterion) + Thread objects and APCs implemented with real semantics,
+verified the same way every other object type in `ntd` was — real
+cross-process tests measuring actual behavior, not stubs.
 
 ---
 
