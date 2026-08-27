@@ -4,3 +4,9 @@
 
 # Compiled ntloader binary - build with `make -C ntloader`, don't commit it.
 /ntloader/ntloader
+
+# Phase 2 build artifacts - build with `make` in ntd/, ntabi/lib/, ntabi/tests/.
+/ntd/ntd
+/ntabi/lib/*.o
+/ntabi/lib/*.a
+/ntabi/tests/test_ntabi

@@ -184,14 +184,68 @@ survive being baked into a freshly booted Arch image" is unverified.
 
 ---
 
-## Phase 2 — NT ABI prototype ⬜
+## Phase 2 — NT ABI prototype 🟨 (object manager done and verified; ntdll integration not attempted)
 
 Deliver `libntabi`, `ntd`, a versioned protocol, and basic handles/events/
 mutexes/semaphores/sections/virtual-memory ops. Route selected `ntdll`
 functionality through it.
 
 **Success criterion:** Wine test suites continue passing while some core NT
-operations no longer use the normal Wine (wineserver) path.
+operations no longer use the normal Wine (wineserver) path. **Not met yet
+— stated plainly below, not glossed over.**
+
+**Task breakdown:**
+
+- [x] Versioned protocol (`ntabi/protocol/ntabi_protocol.h`) — a POSIX
+      shared-memory segment with a submission ring and per-slot completion
+      semaphores (Rule 13: shared memory over chatty RPC), gated by
+      `NTABI_PROTOCOL_VERSION` (Rule 12). Verified for real: corrupted a
+      live segment's version field and confirmed the client refuses to
+      connect rather than misbehaving.
+- [x] `libntabi` (`ntabi/lib/`) — client library implementing the full
+      request/response cycle: allocate a slot, submit, genuinely block
+      (`sem_wait`, not polling) until `ntd` responds.
+- [x] `ntd` (`ntd/ntd.c`) — single-threaded, event-driven object-manager
+      daemon. Event (auto-reset and manual-reset), Mutant, Semaphore;
+      create/open/close with reference counting; real wait/signal
+      semantics, including cross-process blocking waits with correct
+      wake-up ordering (FIFO) and timeouts. Two documented Gen2
+      simplifications: a flat handle space and a flat name→object map,
+      not real per-process handle tables or the `\BaseNamedObjects`
+      namespace hierarchy (`docs/ARCHITECTURE.md` section 6) — noted in
+      `ntd.c`'s header and `ntd/objects/README.md`, not silent.
+      **Sections and virtual-memory ops are not implemented** — Event/
+      Mutant/Semaphore/handles/waits only, matching what the protocol
+      header scopes as Phase 2.
+- [x] Tests (`ntabi/tests/test_ntabi.c`, Rule 11) — 23 checks, **all
+      passing**, run for real in this session (not just written):
+      auto-reset vs. manual-reset event semantics, semaphore counting
+      (including the max-count rejection case), name collision/not-found/
+      type-mismatch handling, the protocol-version guard, and two
+      cross-process tests that matter most: a real event wait and a real
+      mutant ownership hand-off, each verified to *actually block*
+      (elapsed time measured, ~200ms as expected) rather than busy-poll
+      or race a signal from a separate process.
+- [ ] **Route selected `ntdll` functionality through it — not attempted.**
+      This is the one item genuinely not done, and worth being direct
+      about why: it means patching Wine's actual `ntdll` (its sync
+      implementation lives in `dlls/ntdll/unix/sync.c` upstream) to call
+      into `libntabi` for some operations, then rebuilding Wine from
+      source and running *its own* test suite to confirm nothing broke —
+      a substantially larger undertaking than writing the protocol/daemon
+      themselves (a real Wine source checkout, a full build — 30-60+
+      minutes and gigabytes of dependencies — and validating against
+      Wine's own tests). That's real, separate integration work for a
+      dedicated pass, not a corner that was cut here by accident.
+
+**What Phase 2 actually proves, stated precisely:** the protocol, the
+daemon, and the client library are real and correct — genuine NT object
+semantics (not POSIX primitives wearing NT names), enforced across real
+process boundaries, with a real blocking-wait implementation and a real
+versioned-protocol guard. What it does *not* yet prove: that any of this
+sits behind a real `ntdll` boundary, or that a real Windows/Wine
+application's synchronization calls could be transparently routed through
+it without behavior changing. That's the honest boundary of "prototype."
 
 ---
 
