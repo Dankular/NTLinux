@@ -349,12 +349,92 @@ a test failure.
 
 ---
 
-## Phase 4 — ReactOS driver-cell prototype ⬜
+## Phase 4 — ReactOS driver-cell prototype 🟨 (protocol/transport/launcher done and verified; real ReactOS driver written but unbuilt)
 
 Deliver a minimal bootable ReactOS image, KVM launcher, `ntbridge`, logging
 channel, host heartbeat, device enumeration bridge.
 
 **Success criterion:** ReactOS sees synthetic devices supplied by Linux.
+**Met against a stand-in for the ReactOS side, not yet against real
+ReactOS — stated precisely below, not glossed over.**
+
+**Task breakdown:**
+
+- [x] `ntbridge` versioned protocol (`driver/ntbridge/protocol/
+      ntbridge_protocol.h`) — heartbeat counters plus three lock-free
+      SPSC rings (log/PnP/PnP-ack) built on volatile reads/writes and
+      C11 `__atomic` fences, not a mutex/futex, because there is no
+      shared kernel across a VM boundary to provide one (unlike
+      `ntabi`'s POSIX semaphores). Gated by `NTBRIDGE_PROTOCOL_VERSION`
+      (Rule 12) — the header calls out the `NTABI_PROTOCOL_VERSION 2u`
+      stringification bug from Phase 3 directly in a comment so it
+      isn't repeated.
+- [x] `ntbridge-host` (`driver/ntbridge/host/`) — the Linux-side daemon:
+      owns the `ivshmem-plain` backing file, seeds synthetic device
+      descriptors (device enumeration bridge — a fixed list today, one
+      function to swap for real sysfs/udev/netlink discovery later),
+      drives the host heartbeat, drains the logging channel. Exit
+      status is a real pass/fail oracle: 0 only if the guest heartbeat
+      was observed *and* every seeded device was acknowledged.
+- [x] `ntcell` (`driver/cell/launcher/`) — a real QEMU launcher (this
+      is the "KVM launcher" deliverable; falls back to `-accel tcg`
+      since this sandbox has no `/dev/kvm` — the same documented
+      degrade-gracefully pattern as Phase 0's `/dev/ntsync` check, KVM
+      picked automatically on real hardware). Two subcommands:
+      `boot-reactos` (the real ReactOS ISO) and `boot-testguest` (the
+      ntbridge stand-in guest, below).
+- [x] Minimal bootable ReactOS image — `driver/cell/images/
+      fetch-reactos-iso.sh` downloads the real upstream ReactOS 0.4.15
+      release ISO (ADR-0002/Rule 17: consume, don't vendor ReactOS
+      source just to get a bootable image). **Known gap:** this is the
+      stock general-purpose ReactOS ISO (full desktop shell), not yet
+      the stripped driver-only ROS-NTCELL profile ARCHITECTURE.md
+      section 15 describes — that needs building ReactOS from source
+      with RosBE, unavailable here.
+- [x] ReactOS-side `ntbridge` driver (`driver/ntbridge/reactos/
+      ntbridge_pnp.c`) — a real WDM bus driver written against actual
+      ReactOS DDK conventions (`DriverEntry`/`AddDevice`, IRP_MJ_PNP
+      dispatch, `MmMapIoSpace` over translated PnP resources,
+      `IoCreateDevice`/`IoInvalidateDeviceRelations` for child PDOs).
+      **Not built or run** — needs the RosBE cross-toolchain this
+      sandbox doesn't have (same category of gap as Phase 12's Wine
+      `ntdll` integration). Two real bugs are flagged directly in its
+      own comments for whenever a real build becomes possible: a
+      missing wait-for-lower-IRP-completion in `IRP_MN_START_DEVICE`,
+      and `IoCreateDevice` called from DISPATCH_LEVEL inside the poll
+      DPC (needs a deferred work item instead).
+- [x] Honest stand-in guest test (`tests/reactos/
+      ntbridge-guest-test.c`) — since the real ReactOS driver above
+      can't be built here, this implements the *guest side of the
+      identical protocol* as a statically-linked Linux userspace
+      program (finds the ivshmem PCI device via sysfs, `mmap`s BAR2
+      directly, speaks heartbeat/logging/PnP-ack) — proving the wire
+      contract genuinely works across a real QEMU VM boundary, not that
+      the real driver is correct. See `tests/reactos/README.md` for the
+      full accounting of what is and isn't proven by this substitution.
+- [x] Tests (`tests/reactos/run-test.sh`, Rule 11) — builds every
+      component, runs `ntbridge-host` against `ntbridge-guest-test`
+      over a real QEMU VM boundary, asserts pass/fail from the host
+      daemon's exit status. **Verified live**, most recent run: guest
+      heartbeat detected after ~7.8s, all 3 seeded synthetic devices
+      ARRIVED and ACKed, 4 guest log lines received host-side,
+      `ntbridge-host` exited 0.
+- [x] `ntcell boot-reactos --screenshot` verified separately: a real
+      QMP screendump of ReactOS 0.4.15's Setup "Language Selection"
+      screen, booted under QEMU/TCG by the same launcher — genuine
+      ReactOS kernel output, proving the launcher boots real ReactOS,
+      independent of the ntbridge stand-in test above.
+
+**What Phase 4 actually proves, stated precisely:** the ntbridge wire
+protocol, its SPSC ring transport, the host daemon, and the QEMU
+launcher (including real `ivshmem-plain` PCI device attachment reachable
+from inside a genuinely separate guest kernel) are all real and
+verified end-to-end. A real, unmodified ReactOS kernel boots under the
+same launcher. What it does **not** yet prove: that the actual ReactOS-
+side driver (`ntbridge_pnp.c`) compiles or behaves correctly against a
+real ReactOS kernel — that requires RosBE, unavailable in this sandbox,
+and is the honest boundary of "prototype" here, exactly as Phase 2 drew
+the same line around real Wine `ntdll` integration.
 
 ---
 
@@ -491,16 +571,34 @@ cross-process tests measuring actual behavior, not stubs.
    working in a booted shell (see Phase 0).
 3. ~~Enable NT-oriented Linux synchronization support (`ntsync`).~~ ✅
    `/dev/ntsync` confirmed present on the booted kernel (see Phase 0).
-4. Implement `ntloader`.
-5. Make PE binaries directly executable.
-6. Build per-application NT environment manager.
-7. Implement `libntabi` protocol skeleton.
-8. Route one small set of `ntdll` operations through it.
-9. Create ReactOS minimal driver-cell build experiment.
-10. Boot that build under KVM with no desktop.
-11. Create `ntbridge` shared-memory hello/heartbeat protocol.
-12. Send synthetic PCI/USB device descriptions from Linux to ReactOS.
-13. Confirm ReactOS PnP creates device nodes.
+4. ~~Implement `ntloader`.~~ ✅ compiled, registered with real kernel
+   binfmt_misc, ran a real PE binary directly (see Phase 1).
+5. ~~Make PE binaries directly executable.~~ ✅ same binfmt_misc
+   verification as above (see Phase 1).
+6. ~~Build per-application NT environment manager.~~ ✅
+   `tooling/installer/ntlinux-app` (see Phase 1).
+7. ~~Implement `libntabi` protocol skeleton.~~ ✅ grew well past
+   "skeleton" — full object manager (see Phase 2 + Phase 3).
+8. Route one small set of `ntdll` operations through it — moved to
+   Phase 12 with the rest of the Wine `ntdll` integration work (see
+   Phase 2's "known gap" and Phase 12).
+9. ~~Create ReactOS minimal driver-cell build experiment.~~ ✅ (partially
+   — real ReactOS boots under `ntcell`, but it's the stock ISO, not yet
+   the stripped ROS-NTCELL profile; see Phase 4.)
+10. Boot that build under KVM with no desktop — booted under **TCG**,
+    not KVM (no `/dev/kvm` in this sandbox — see Phase 4), and it's the
+    stock ISO's desktop-capable Setup, not a no-desktop ROS-NTCELL
+    build. Both caveats tracked in Phase 4, not silently dropped.
+11. ~~Create `ntbridge` shared-memory hello/heartbeat protocol.~~ ✅
+    verified end-to-end over a real QEMU VM boundary (see Phase 4).
+12. ~~Send synthetic PCI/USB device descriptions from Linux to
+    ReactOS.~~ ✅ against the honest stand-in guest, not real ReactOS
+    yet — see Phase 4's precise accounting.
+13. Confirm ReactOS PnP creates device nodes — **not done**: this needs
+    the real ReactOS-side driver (`driver/ntbridge/reactos/
+    ntbridge_pnp.c`) actually built and running inside ReactOS, which
+    needs RosBE (see Phase 4's "known gap"). The stand-in guest
+    acknowledges devices; it has no NT PnP manager to create nodes in.
 14. Load a simple test `.sys`.
 15. Deliver `IRP_MN_START_DEVICE`.
 16. Bridge test I/O back to Linux.

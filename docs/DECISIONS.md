@@ -171,3 +171,71 @@ argues against tackling independently.
   Phase 1's `.desktop` launcher-file generation (`tooling/installer/`),
   which is unrelated (freedesktop.org application launchers, not the
   shell itself).
+
+---
+
+## ADR-0005 — Driver-cell prototype: consume a ReactOS release ISO now; poll-based ivshmem-plain for ntbridge; verify against an honest stand-in guest until RosBE is reachable
+
+**Date:** 2026-08-27
+
+**Decision:** Three related choices made building the Phase 4 driver-cell
+prototype:
+
+1. `driver/cell/images/fetch-reactos-iso.sh` downloads the real upstream
+   ReactOS release ISO (currently 0.4.15) rather than vendoring ReactOS
+   source and building the stripped ROS-NTCELL profile
+   (`docs/ARCHITECTURE.md` section 15) from scratch. Extends
+   ADR-0002/Rule 17's "consume, don't vendor" further than originally
+   scoped (that ADR covered `graphics/`/`proton/`; this applies the same
+   reasoning to the ReactOS boot image itself for the prototype stage).
+2. `driver/ntbridge/protocol/ntbridge_protocol.h`'s transport is QEMU
+   `ivshmem-plain` — shared memory with **no** interrupt/doorbell — with
+   both sides polling on a fixed tick, rather than `ivshmem-doorbell` +
+   eventfd from the start.
+3. Phase 4's ntbridge protocol/transport/host are verified against an
+   honest stand-in guest client (`tests/reactos/ntbridge-guest-test.c`,
+   plain Linux userspace speaking the identical wire protocol) rather
+   than waiting until the real ReactOS-side driver
+   (`driver/ntbridge/reactos/ntbridge_pnp.c`) can be built and tested.
+
+**Rationale:**
+
+1. Building ReactOS from source needs the RosBE cross-toolchain, which
+   is a substantial, separate undertaking (comparable in kind to the
+   full Wine source build Phase 2/12 already deferred for the same
+   reason) and wasn't reachable in the sandbox that built this phase.
+   A real, unmodified ReactOS kernel booting under `ntcell` is still a
+   genuine, useful proof that the *launcher* works — it just isn't yet
+   the eventual driver-only image.
+2. `ivshmem-doorbell` needs an `ivshmem-server` process brokering eventfd
+   descriptors to every attached VM — real infrastructure with its own
+   failure modes, worth adding once polling latency actually matters for
+   a real driver's timing requirements, not before there's a concrete
+   consumer to measure it against. Polling is simpler, and the exact
+   same tradeoff `ntd`'s 50ms tick already makes for `pidfd` exit
+   detection (Phase 3) — consistent with how this project already
+   prefers the simplest mechanism that's still genuinely correct.
+3. Rule 11 requires tests for every NT compatibility implementation;
+   refusing to test *anything* until RosBE exists would leave the
+   entire ntbridge transport — the part actually reusable regardless of
+   which OS eventually sits in the cell — unverified for an
+   indeterminate stretch of future work. The stand-in shares the exact
+   protocol header with the real driver, so it's a genuine
+   protocol-conformance test, not a mock of one; ROADMAP.md and every
+   README touching this are explicit that it does not validate
+   `ntbridge_pnp.c` itself.
+
+**Consequences:**
+- `driver/cell/images/*.iso` is gitignored; fetched, not vendored.
+- `reactos/upstream/` stays empty until a real ReactOS source build is
+  actually attempted — no submodule-vs-snapshot decision made
+  prematurely (see that directory's README).
+- `driver/ntbridge/protocol/ntbridge_protocol.h` documents the
+  doorbell upgrade path directly in its header comment, so it isn't
+  forgotten once a real driver's latency needs force the question.
+- `driver/ntbridge/reactos/ntbridge_pnp.c` exists as real, reviewable
+  driver source with its known gaps (two flagged bugs, needs RosBE) but
+  is explicitly marked unbuilt everywhere it's referenced — ROADMAP.md,
+  its own README, `driver/ntbridge/README.md`, and
+  `tests/reactos/README.md` all state the same boundary consistently,
+  so no document overstates what Phase 4 actually proved.

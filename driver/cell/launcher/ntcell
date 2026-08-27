@@ -1,0 +1,177 @@
+#!/bin/bash
+# ntcell — QEMU launcher for the ReactOS driver cell (ARCHITECTURE.md
+# sections 14-16, driver/cell/launcher/README.md).
+#
+# Reuses QEMU/KVM rather than writing a hypervisor (Rule 1) — this is
+# Phase 4's "KVM launcher" deliverable, named for the accelerator it
+# prefers even though this development sandbox has no /dev/kvm (no
+# nested virtualization here — the same kind of environment gap already
+# documented for /dev/ntsync in Phase 0's ROADMAP entry). It falls back
+# to -accel tcg automatically; on real NTLinux hardware with KVM this
+# same script picks kvm with no changes.
+#
+# Two subcommands, matching what this sandbox can actually verify
+# end-to-end (see tests/reactos/README.md for the full honesty
+# accounting):
+#
+#   boot-reactos     Boots the real, unmodified ReactOS release ISO
+#                     fetched by driver/cell/images/fetch-reactos-iso.sh.
+#                     Proves the launcher (this script) can genuinely
+#                     boot a real ReactOS kernel under QEMU. Does NOT
+#                     exercise ntbridge — the stock ISO has no
+#                     ntbridge.sys driver (see
+#                     driver/ntbridge/reactos/README.md: that driver's
+#                     source exists in this repo but isn't buildable
+#                     here without the RosBE toolchain).
+#
+#   boot-testguest    Boots the ntbridge-guest-test stand-in
+#                     (tests/reactos/) with an ivshmem-plain device
+#                     attached, backed by the same shared-memory file
+#                     driver/ntbridge/host/ntbridge-host uses. Proves
+#                     the actual ntbridge/protocol/host code — logging
+#                     channel, host heartbeat, device-enumeration bridge
+#                     — over a real QEMU VM boundary. See
+#                     tests/reactos/run-test.sh for the orchestrated
+#                     pass/fail version of this.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CELL_DIR="$(cd "$HERE/.." && pwd)"
+IMAGES_DIR="$CELL_DIR/images"
+DRIVER_DIR="$(cd "$CELL_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$DRIVER_DIR/.." && pwd)"
+
+SHM_PATH="${NTCELL_SHM_PATH:-/dev/shm/ntlinux-ntbridge-cell0}"
+SHM_SIZE_MB=1
+
+accel() {
+    if [ -w /dev/kvm ] 2>/dev/null; then
+        echo kvm
+    else
+        echo tcg
+    fi
+}
+
+ivshmem_args() {
+    # ntbridge-host must own creation/initialization of $SHM_PATH before
+    # this runs (see driver/ntbridge/host/ntbridge-host.c's open_shm());
+    # QEMU only ever attaches to an already-sized file here.
+    echo -n "-device ivshmem-plain,memdev=ntbridge-shm "
+    echo -n "-object memory-backend-file,id=ntbridge-shm,mem-path=${SHM_PATH},size=${SHM_SIZE_MB}M,share=on"
+}
+
+cmd_boot_reactos() {
+    local iso="$IMAGES_DIR/ReactOS-0.4.15-release-1-gdbb43bbaeb2-x86.iso"
+    local screenshot=""
+    local timeout_s=90
+    local attach_bridge=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --iso) iso="$2"; shift 2 ;;
+            --screenshot) screenshot="$2"; shift 2 ;;
+            --timeout) timeout_s="$2"; shift 2 ;;
+            --with-ntbridge) attach_bridge=1; shift ;;
+            *) echo "ntcell: unknown option $1" >&2; exit 1 ;;
+        esac
+    done
+
+    if [ ! -f "$iso" ]; then
+        echo "ntcell: $iso not found — run driver/cell/images/fetch-reactos-iso.sh first" >&2
+        exit 1
+    fi
+
+    local monitor_sock qmp_sock serial_log
+    monitor_sock="$(mktemp -u /tmp/ntcell-monitor.XXXXXX.sock)"
+    qmp_sock="$(mktemp -u /tmp/ntcell-qmp.XXXXXX.sock)"
+    serial_log="$(mktemp /tmp/ntcell-reactos-serial.XXXXXX.log)"
+
+    local -a args=(
+        -M pc -m 512 -accel "$(accel)"
+        -cdrom "$iso" -boot d
+        -display none -vga std
+        -serial "file:${serial_log}"
+        -monitor "unix:${monitor_sock},server,nowait"
+        -qmp "unix:${qmp_sock},server,nowait"
+        -no-reboot
+    )
+    if [ "$attach_bridge" = "1" ]; then
+        # shellcheck disable=SC2046
+        args+=($(ivshmem_args))
+    fi
+
+    echo "ntcell: booting $(basename "$iso") under QEMU (accel=$(accel), timeout=${timeout_s}s)"
+    qemu-system-x86_64 "${args[@]}" &
+    local qemu_pid=$!
+
+    sleep "$timeout_s"
+
+    if [ -n "$screenshot" ] && kill -0 "$qemu_pid" 2>/dev/null; then
+        echo "ntcell: capturing screendump to $screenshot"
+        python3 "$HERE/qmp_screendump.py" "$qmp_sock" "$screenshot" || \
+            echo "ntcell: WARNING: screendump failed" >&2
+    fi
+
+    if kill -0 "$qemu_pid" 2>/dev/null; then
+        kill "$qemu_pid" 2>/dev/null || true
+        wait "$qemu_pid" 2>/dev/null || true
+    fi
+
+    echo "ntcell: serial console log at $serial_log"
+    rm -f "$monitor_sock" "$qmp_sock"
+}
+
+cmd_boot_testguest() {
+    local duration=12
+    local timeout_s=30
+    local kernel="/boot/vmlinuz"
+    local initrd="$REPO_ROOT/tests/reactos/initramfs.cpio.gz"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --duration) duration="$2"; shift 2 ;;
+            --timeout) timeout_s="$2"; shift 2 ;;
+            --kernel) kernel="$2"; shift 2 ;;
+            --initrd) initrd="$2"; shift 2 ;;
+            *) echo "ntcell: unknown option $1" >&2; exit 1 ;;
+        esac
+    done
+
+    if [ ! -f "$initrd" ]; then
+        echo "ntcell: $initrd not found — run tests/reactos/build-testguest-initramfs.sh first" >&2
+        exit 1
+    fi
+    if [ ! -f "$SHM_PATH" ]; then
+        echo "ntcell: $SHM_PATH not found — start driver/ntbridge/host/ntbridge-host first" >&2
+        exit 1
+    fi
+
+    local serial_log
+    serial_log="$(mktemp /tmp/ntcell-testguest-serial.XXXXXX.log)"
+
+    local -a args=(
+        -M pc -m 256 -accel "$(accel)"
+        -kernel "$kernel" -initrd "$initrd"
+        -append "console=ttyS0 panic=1 ntbridge_duration=${duration}"
+        -display none -nographic -serial "file:${serial_log}"
+        -no-reboot
+    )
+    # shellcheck disable=SC2046
+    args+=($(ivshmem_args))
+
+    echo "ntcell: booting ntbridge-guest-test under QEMU (accel=$(accel), duration=${duration}s)"
+    timeout "$timeout_s" qemu-system-x86_64 "${args[@]}" || true
+
+    echo "--- guest serial console (${serial_log}) ---"
+    cat "$serial_log"
+    echo "--- end guest serial console ---"
+}
+
+case "${1:-}" in
+    boot-reactos) shift; cmd_boot_reactos "$@" ;;
+    boot-testguest) shift; cmd_boot_testguest "$@" ;;
+    *)
+        echo "usage: ntcell {boot-reactos|boot-testguest} [options]" >&2
+        exit 1
+        ;;
+esac

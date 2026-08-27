@@ -1,0 +1,52 @@
+; ntbridge.inf — installs the ReactOS-side ntbridge bus driver
+; (ntbridge_pnp.c) against the ivshmem PCI function QEMU exposes for the
+; driver cell (driver/cell/launcher/ntcell's -device ivshmem-plain).
+;
+; NOT YET TESTED — see ntbridge_pnp.c's header and this directory's
+; README.md. Written as a real PCI class INF (standard NT bus-driver
+; install shape) matching NTBRIDGE_IVSHMEM_VENDOR_ID/DEVICE_ID from
+; driver/ntbridge/protocol/ntbridge_protocol.h (0x1AF4 / 0x1110).
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = System
+ClassGuid   = {4D36E97D-E325-11CE-BFC1-08002BE10318}
+Provider    = %NTLinux%
+DriverVer   = 08/27/2026,0.1.0.0
+
+[Manufacturer]
+%NTLinux% = NTLinux, NTx86
+
+[NTLinux.NTx86]
+%NtBridge.DeviceDesc% = NtBridge_Install, PCI\VEN_1AF4&DEV_1110
+
+[NtBridge_Install]
+CopyFiles = NtBridge_CopyFiles
+
+[NtBridge_Install.Services]
+AddService = ntbridge, 0x00000002, NtBridge_Service
+
+[NtBridge_Service]
+DisplayName    = %NtBridge.SvcDesc%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\ntbridge.sys
+
+[NtBridge_CopyFiles]
+ntbridge.sys
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+ntbridge.sys = 1
+
+[DestinationDirs]
+NtBridge_CopyFiles = 12 ; %SystemRoot%\System32\drivers
+
+[Strings]
+NTLinux              = "NTLinux"
+NtBridge.DeviceDesc  = "NTLinux Driver-Cell Bridge (ntbridge)"
+NtBridge.SvcDesc     = "NTLinux ntbridge Host/Cell Transport"
+DiskName             = "NTLinux Driver Cell Support Disk"
