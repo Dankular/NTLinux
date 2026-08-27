@@ -1,0 +1,6 @@
+# Staged by distro/image/build.sh; should be cleaned up automatically but
+# ignore it defensively in case a build is interrupted mid-way.
+/distro/image/airootfs/root/ntloader-src/
+
+# Compiled ntloader binary - build with `make -C ntloader`, don't commit it.
+/ntloader/ntloader

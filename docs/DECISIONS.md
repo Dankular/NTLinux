@@ -116,3 +116,58 @@ get there already exists rather than needing new invention:
 - Not a blocker for anything earlier. Section 47's performance rule stands:
   a driver-hosted GPU is an opt-in path for otherwise-unsupported hardware,
   never a detour on the default Vulkan path normal games take.
+
+---
+
+## ADR-0004 — Desktop shell: LingmoOS is the reference/reuse target for Windows-like look and feel
+
+**Date:** 2026-08-27
+
+**Decision:** For `desktop/` — the eventual taskbar/dock, Start menu,
+notifications, settings, and file-manager integration described in
+`docs/ARCHITECTURE.md` section 9 — use
+[LingmoOS](https://github.com/LingmoOS) as the primary reuse/reference
+target rather than designing a shell from scratch. Confirmed by inspecting
+the project directly (not just characterization): LingmoOS's `shell32`
+component tree contains `kscreen` (a real, recognizable KDE display-
+management component), `lingmo-framework`, `lingmo-shell`, and `osd`, a
+naming/structure pattern that mirrors KDE Plasma's own split (Plasma's
+`kscreen`, `plasma-framework`, `plasma-shell` equivalents) — i.e. a
+modular, independently-running-component shell built on Qt/QML with KWin
+as the window manager, not a monolithic desktop environment.
+
+**Rationale:** This maps closely onto the **ShellBroker → DesktopHost /
+TaskbarHost / StartHost** separation NTLinux wants for replicating
+Windows' own shell model (`explorer.exe` internally separates desktop,
+taskbar, and Start UI as distinct pieces coordinated through a broker,
+not one monolithic process). LingmoOS already has that kind of
+component split, and KWin is itself Wayland-native and themeable —
+reusing that structure (Rule 1) avoids building an entire desktop-shell
+architecture from zero, which is exactly the kind of large, generic,
+already-solved-elsewhere problem the project's reuse-first principle
+argues against tackling independently.
+
+**Consequences:**
+- `desktop/shell/` direction: adapt/theme LingmoOS's existing shell
+  components toward NT/Windows-style look and feel (taskbar, Start menu,
+  notification/status area, file manager chrome), rather than a
+  from-scratch shell. Whether that means forking specific components,
+  running them alongside new NT-themed UI, or reusing only the
+  broker/D-Bus architecture with entirely new components on top is an
+  open implementation question for when `desktop/` work actually starts —
+  not decided by this ADR.
+- Before deep integration work begins: verify LingmoOS's exact toolkit,
+  D-Bus surface, and KWin integration against its actual source (this ADR
+  is based on directory-structure inspection of the public repo, not a
+  full source read) — treat specifics here as a strong lead, not a
+  verified API contract, until that read happens.
+- Section 9's "Potential future compositor: `ntcomp`" note in
+  `docs/ARCHITECTURE.md` should be read alongside this: `ntcomp` may end
+  up being an NTLinux KWin configuration/theme plus LingmoOS-derived shell
+  components, rather than a from-scratch compositor or shell.
+- Not scoped to any phase currently in progress. `desktop/` remains "Not
+  started" per its directory README — this is a forward-looking
+  architecture decision recorded for when that work begins, distinct from
+  Phase 1's `.desktop` launcher-file generation (`tooling/installer/`),
+  which is unrelated (freedesktop.org application launchers, not the
+  shell itself).

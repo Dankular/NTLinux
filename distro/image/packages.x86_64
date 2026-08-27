@@ -78,6 +78,16 @@ steam
 gamemode
 lib32-gamemode
 
+# --- NTLinux Phase 1 additions (native Windows executable UX) ---
+# python: runs tooling/installer/ntlinux-app (already pulled in transitively
+# by several packages above, listed explicitly since Phase 1 now depends on
+# it directly, not just incidentally).
+# icoutils: wrestool/icotool, used by ntlinux-app to extract a real desktop
+# icon from a PE binary's own resources (Rule 1: reuse, don't hand-parse
+# ICO/PE resource sections).
+python
+icoutils
+
 # graphics/dxvk, graphics/vkd3d-proton note (ADR-0002: consume, don't vendor):
 # Steam's own Proton already bundles matching DXVK/vkd3d-proton builds, so
 # no separate package is required for Proton games out of the box. For

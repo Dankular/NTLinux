@@ -34,7 +34,7 @@ pipewire-jack           # 31        — pro-audio compat shim
 wireplumber             # 31        — PipeWire session manager
 wine                    # 3.1       — Win32/Win64 user-mode runtime (upstream, unmodified for Phase 0)
 wine-staging            # 3.1       — staging patches, broader game compatibility
-winetricks              # 3.1       — DLL/component helper, useful until ntloader/Phase 1 lands
+winetricks              # 3.1       — DLL/component helper for manual prefix tweaks
 steam                   # 10, 38    — bundles Proton, DXVK, vkd3d-proton per-game automatically;
                         #             also installs udev rules covering most controllers (32),
                         #             so no separate game-devices-udev package is needed — that
@@ -42,3 +42,8 @@ steam                   # 10, 38    — bundles Proton, DXVK, vkd3d-proton per-g
 gamemode                # 10        — CPU governor/priority tuning for games
 lib32-gamemode          # 10, 11    — 32-bit gamemode support library
 networkmanager          # (live-boot essential, not NT-specific)
+
+# --- Phase 1: native Windows executable UX (ntloader, tooling/installer/) ---
+python                  # 4         — runs tooling/installer/ntlinux-app
+icoutils                # 4, 37     — wrestool/icotool: real desktop icons extracted from PE
+                        #             resources, not hand-parsed (Rule 1)

@@ -99,13 +99,88 @@ graphical session and an actual game launch end-to-end.
 
 ---
 
-## Phase 1 — Native Windows executable UX ⬜
+## Phase 1 — Native Windows executable UX ✅ (verified as far as this sandbox allows)
 
 Deliver `ntloader`, PE binary-format registration, per-app environment
 management, desktop file generation, a Windows application installer.
 
 **Success criterion:** `./notepad.exe` works without explicitly invoking
-`wine`.
+`wine`. **Met, literally, and verified live in this session** — not just
+implemented, actually run and screenshotted.
+
+**Task breakdown:**
+
+- [x] `ntloader` (`ntloader/ntloader.c`) — reads the PE header enough to
+      route by architecture, creates/reuses a per-app environment (§37),
+      and `execve()`s into `wine`. Deliberately Gen1 (§3.2): real PE
+      loading stays Wine's job (Rule 1), not reimplemented here. Compiles
+      clean with `-Wall -Wextra`, zero warnings.
+- [x] PE binary-format registration — `distro/image/airootfs/usr/lib/binfmt.d/ntlinux-pe.conf`,
+      a `systemd-binfmt` rule matching the `MZ` magic bytes to
+      `/usr/libexec/ntloader`. Verified for real: registered directly
+      with the kernel's `binfmt_misc` (`/proc/sys/fs/binfmt_misc/register`)
+      in this session, not just written to a config file.
+- [x] Per-application NT environment manager — `ensure_app_dirs()` in
+      `ntloader.c`, matched by the same logic in `tooling/installer/ntlinux-app`
+      (Python). Creates `~/.local/share/ntlinux/apps/<id>/{drive-c,registry,
+      compat,dll-overrides,state,prefix}` per §37. The `<id>` scheme
+      (basename + FNV-1a-64 hash of the resolved path) is intentionally
+      duplicated between the C and Python implementations — documented in
+      both, not an oversight — and verified to produce **identical** IDs
+      for the same file from both tools.
+- [x] Desktop file generation — `ntlinux-app desktop`/`run-installer`
+      write real `.desktop` entries under `~/.local/share/applications/`,
+      with icons extracted from the PE binary's own resources via
+      `wrestool`/`icotool` (`icoutils` — Rule 1, not a hand-rolled ICO
+      parser). `Exec=` is just the `.exe`'s path, since `binfmt_misc` +
+      `ntloader` already make it directly executable.
+- [x] Windows application installer — `ntlinux-app run-installer` runs a
+      Windows installer in a fresh prefix, diffs `Program Files*`
+      before/after to find what it installed, and generates the desktop
+      entry for that program. (The installer-diffing path itself wasn't
+      exercised against a real installer in this session — no installer
+      binary was on hand to test against, only a portable `.exe`
+      (`notepad.exe`); the underlying mechanics — prefix creation,
+      before/after diffing, desktop-file generation — are shared code
+      paths already verified by the `desktop` subcommand test below.)
+
+**Verified live, end to end, in this session** (Ubuntu sandbox — Wine
+9.0 + a virtual X display via Xvfb, not the NTLinux reference image; see
+"Known gap" below):
+
+1. Compiled `ntloader`, installed it at `/usr/libexec/ntloader`, and
+   registered it with the running kernel's `binfmt_misc` for real
+   (`/proc/sys/fs/binfmt_misc/ntlinux-pe` came back `enabled`).
+2. Copied Wine's own bundled `notepad.exe` (a real PE32+ binary,
+   `/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/notepad.exe`) to a local
+   directory, `chmod +x`, and ran **`./notepad.exe` directly** — no
+   `wine`, no `ntloader`, nothing but the bare filename, exactly the
+   literal success criterion above.
+3. The kernel dispatched it through `ntloader`, which created a fresh
+   per-app environment, set `WINEPREFIX`, and `exec`'d `wine`. A full
+   first-run Wine prefix bootstrap happened automatically (`wineboot`,
+   `winedevice`, `rundll32` installing `wine.inf`) — real
+   `system.reg`/`user.reg`/`drive_c` with the standard Windows directory
+   layout, not a stub.
+4. On a virtual display (`Xvfb`), a real window titled
+   **"Untitled - Notepad" (721×512)** appeared — captured and sent as a
+   screenshot in this session. `ntlinux-app desktop` independently
+   computed the exact same app-id `ntloader` had already created for that
+   file, and extracted a real icon from the binary's own resources.
+
+**Known gap, stated plainly:** all of the above was verified on this
+Ubuntu sandbox (installed Wine/Xvfb/icoutils directly, mounted
+`binfmt_misc`), not by rebuilding and booting the actual NTLinux ISO —
+that cycle is expensive (Phase 0's rebuilds took 13+ minutes each and hit
+real infrastructure trouble along the way) and wasn't repeated here on
+top of it. `distro/image/build.sh` + `airootfs/root/customize_airootfs.sh`
+wire `ntloader` and `ntlinux-app` into the actual image build
+(compiled/installed inside the `mkarchiso` chroot), and
+`distro/image/packages.x86_64` carries the new `python`/`icoutils`
+dependencies — but that wiring hasn't been re-verified with a full image
+rebuild + boot test. The mechanism itself (kernel `binfmt_misc` → this
+exact `ntloader` binary → Wine → a real window) is proven; only "does it
+survive being baked into a freshly booted Arch image" is unverified.
 
 ---
 

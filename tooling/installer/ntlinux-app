@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+"""ntlinux-app - per-application NT environment manager and Windows
+application installer (docs/ARCHITECTURE.md sections 4, 37; ROADMAP.md
+Phase 1).
+
+Complements ntloader (ntloader/ntloader.c): ntloader dispatches `./game.exe`
+transparently via binfmt_misc; this tool handles the *installation* side -
+running a Windows installer, picking out the program it installed, and
+generating a desktop launcher for it - plus the "just make a shortcut for
+this portable .exe" case that doesn't need an installer step at all.
+
+App-id scheme MUST match ntloader.c's (basename + 16-hex-digit FNV-1a-64 of
+the realpath) so that running the same .exe directly (via binfmt_misc) and
+launching it via a generated .desktop file land in the *same* per-app
+environment. Gen1 scope note (see ntloader.c): this duplication between C
+and Python is intentional and documented, not an oversight - a real shared
+implementation belongs in libntabi once Phase 2 exists.
+"""
+import argparse
+import json
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+FNV_OFFSET = 0xcbf29ce484222325
+FNV_PRIME = 0x100000001b3
+MASK64 = 0xFFFFFFFFFFFFFFFF
+
+
+def fnv1a64(s: bytes) -> int:
+    h = FNV_OFFSET
+    for b in s:
+        h ^= b
+        h = (h * FNV_PRIME) & MASK64
+    return h
+
+
+def data_home() -> Path:
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if xdg:
+        return Path(xdg)
+    return Path.home() / ".local" / "share"
+
+
+def app_id_and_dir(exe: Path) -> tuple[str, Path]:
+    resolved = exe.resolve()
+    h = fnv1a64(str(resolved).encode("utf-8"))
+    app_id = f"{resolved.name}-{h:016x}"
+    appdir = data_home() / "ntlinux" / "apps" / app_id
+    return app_id, appdir
+
+
+PE_SUBDIRS = ["registry", "compat", "dll-overrides", "state", "prefix"]
+
+
+def ensure_app_dirs(appdir: Path) -> None:
+    """Mirrors ntloader.c's ensure_app_dirs - same layout, same names."""
+    appdir.mkdir(parents=True, exist_ok=True)
+    for sub in PE_SUBDIRS:
+        (appdir / sub).mkdir(parents=True, exist_ok=True)
+    drive_c = appdir / "drive-c"
+    if not drive_c.is_symlink() and not drive_c.exists():
+        drive_c.symlink_to("prefix/drive_c")
+
+
+def read_pe_machine(exe: Path) -> str | None:
+    """Minimal PE machine-type sniff, same fields ntloader.c reads."""
+    try:
+        with open(exe, "rb") as f:
+            dos = f.read(64)
+            if len(dos) < 64 or dos[0:2] != b"MZ":
+                return None
+            e_lfanew = struct.unpack_from("<i", dos, 0x3C)[0]
+            f.seek(e_lfanew)
+            if f.read(4) != b"PE\0\0":
+                return None
+            file_header = f.read(20)
+            machine = struct.unpack_from("<H", file_header, 0)[0]
+    except OSError:
+        return None
+    return {0x14c: "i386", 0x8664: "amd64"}.get(machine)
+
+
+def write_meta(appdir: Path, **fields) -> None:
+    meta_path = appdir / "meta.json"
+    meta = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    meta.update(fields)
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+
+
+def extract_icon(exe: Path, out_png: Path) -> bool:
+    """Best-effort icon extraction via icoutils (wrestool + icotool) -
+    an existing, purpose-built tool (Rule 1: reuse), not a custom PE
+    resource parser. Returns True if out_png was written."""
+    if not (shutil.which("wrestool") and shutil.which("icotool")):
+        return False
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        ico_path = tdp / "icon.ico"
+        try:
+            subprocess.run(
+                ["wrestool", "-x", "--output", str(ico_path), "-t", "14", str(exe)],
+                check=True, capture_output=True, timeout=30,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            return False
+        if not ico_path.exists() or ico_path.stat().st_size == 0:
+            return False
+        try:
+            subprocess.run(
+                ["icotool", "-x", "-o", str(tdp), str(ico_path)],
+                check=True, capture_output=True, timeout=30,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            return False
+        pngs = sorted(tdp.glob("*.png"),
+                      key=lambda p: p.stat().st_size, reverse=True)
+        if not pngs:
+            return False
+        out_png.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(pngs[0], out_png)
+        return True
+
+
+def write_desktop_file(name: str, exe: Path, icon: Path | None, app_id: str) -> Path:
+    apps_dir = data_home() / "applications"
+    apps_dir.mkdir(parents=True, exist_ok=True)
+    desktop_path = apps_dir / f"ntlinux-{app_id}.desktop"
+    lines = [
+        "[Desktop Entry]",
+        "Type=Application",
+        f"Name={name}",
+        # The exe itself is the Exec target: binfmt_misc + ntloader (see
+        # distro/rootfs/usr/lib/binfmt.d/ntlinux-pe.conf) make it directly
+        # executable, so no `wine`/`ntloader` wrapper is needed here - the
+        # whole point of Phase 1 is that this line can just be the .exe.
+        f'Exec="{exe.resolve()}"',
+        "Terminal=false",
+        "Categories=Game;X-NTLinux;",
+        f"X-NTLinux-AppId={app_id}",
+    ]
+    if icon is not None:
+        lines.append(f"Icon={icon}")
+    desktop_path.write_text("\n".join(lines) + "\n")
+    return desktop_path
+
+
+def cmd_desktop(args: argparse.Namespace) -> int:
+    exe = Path(args.exe)
+    if not exe.exists():
+        print(f"ntlinux-app: {exe} does not exist", file=sys.stderr)
+        return 1
+    machine = read_pe_machine(exe)
+    if machine is None:
+        print(f"ntlinux-app: {exe} is not a valid PE binary", file=sys.stderr)
+        return 1
+
+    app_id, appdir = app_id_and_dir(exe)
+    ensure_app_dirs(appdir)
+
+    name = args.name or exe.stem
+    icon_path = None
+    if not args.no_icon:
+        icon_out = appdir / "state" / "icon.png"
+        if extract_icon(exe, icon_out):
+            icon_path = icon_out
+
+    desktop_path = write_desktop_file(name, exe, icon_path, app_id)
+    write_meta(appdir, target=str(exe.resolve()), name=name, machine=machine,
+               kind="portable", installed_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+
+    print(f"ntlinux-app: {exe} ({machine}) -> app {app_id}")
+    print(f"ntlinux-app: environment at {appdir}")
+    print(f"ntlinux-app: desktop entry at {desktop_path}"
+          + (f" (icon: {icon_path})" if icon_path else " (no icon extracted)"))
+    return 0
+
+
+def cmd_run_installer(args: argparse.Namespace) -> int:
+    installer = Path(args.installer)
+    if not installer.exists():
+        print(f"ntlinux-app: {installer} does not exist", file=sys.stderr)
+        return 1
+    if read_pe_machine(installer) is None:
+        print(f"ntlinux-app: {installer} is not a valid PE binary", file=sys.stderr)
+        return 1
+
+    app_id, appdir = app_id_and_dir(installer)
+    ensure_app_dirs(appdir)
+    prefix = appdir / "prefix"
+
+    program_files_dirs = [
+        prefix / "drive_c" / "Program Files",
+        prefix / "drive_c" / "Program Files (x86)",
+    ]
+    before = {
+        p for d in program_files_dirs if d.exists() for p in d.rglob("*.exe")
+    }
+
+    print(f"ntlinux-app: running installer {installer} in {prefix} ...")
+    env = dict(os.environ)
+    env["WINEPREFIX"] = str(prefix)
+    wine_bin = args.wine_binary
+    try:
+        subprocess.run([wine_bin, str(installer.resolve())], env=env, check=False)
+    except FileNotFoundError:
+        print(f"ntlinux-app: '{wine_bin}' not found on $PATH", file=sys.stderr)
+        return 1
+
+    after = {
+        p for d in program_files_dirs if d.exists() for p in d.rglob("*.exe")
+    }
+    new_exes = sorted(after - before)
+
+    if args.target:
+        target = Path(args.target)
+    elif len(new_exes) == 1:
+        target = new_exes[0]
+        print(f"ntlinux-app: detected installed program: {target}")
+    elif new_exes:
+        print("ntlinux-app: multiple new .exe files found after install; "
+              "re-run with --target to pick one:", file=sys.stderr)
+        for p in new_exes:
+            print(f"  {p}", file=sys.stderr)
+        return 2
+    else:
+        print("ntlinux-app: no new .exe found under Program Files after "
+              "install; re-run with --target <path inside the prefix> to "
+              "generate the desktop entry manually.", file=sys.stderr)
+        return 2
+
+    name = args.name or target.stem
+    icon_path = None
+    if not args.no_icon:
+        icon_out = appdir / "state" / "icon.png"
+        if extract_icon(target, icon_out):
+            icon_path = icon_out
+
+    # The installed target lives inside *this* app's prefix, but ntloader
+    # keys environments off the target exe's own resolved path - which for
+    # an installed program is already unique (inside this prefix), so a
+    # direct run of that .exe (or a desktop entry pointing at it) will
+    # naturally get its own app-id/environment separate from the installer.
+    desktop_path = write_desktop_file(name, target, icon_path, app_id)
+    write_meta(appdir, installer=str(installer.resolve()), target=str(target),
+               name=name, kind="installed",
+               installed_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+
+    print(f"ntlinux-app: desktop entry at {desktop_path}"
+          + (f" (icon: {icon_path})" if icon_path else " (no icon extracted)"))
+    return 0
+
+
+def cmd_list(_args: argparse.Namespace) -> int:
+    apps_root = data_home() / "ntlinux" / "apps"
+    if not apps_root.is_dir():
+        print("ntlinux-app: no apps installed yet")
+        return 0
+    found = False
+    for appdir in sorted(apps_root.iterdir()):
+        meta_path = appdir / "meta.json"
+        if not meta_path.exists():
+            continue
+        found = True
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            meta = {}
+        print(f"{appdir.name}")
+        print(f"  name:   {meta.get('name', '?')}")
+        print(f"  target: {meta.get('target', '?')}")
+        print(f"  kind:   {meta.get('kind', '?')}")
+        print(f"  dir:    {appdir}")
+    if not found:
+        print("ntlinux-app: no apps installed yet")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="ntlinux-app",
+        description="Per-application NT environment manager / Windows app installer")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_desktop = sub.add_parser(
+        "desktop", help="generate a desktop entry for a portable .exe (no installer)")
+    p_desktop.add_argument("exe")
+    p_desktop.add_argument("--name")
+    p_desktop.add_argument("--no-icon", action="store_true")
+    p_desktop.set_defaults(func=cmd_desktop)
+
+    p_install = sub.add_parser(
+        "run-installer", help="run a Windows installer, then generate a desktop entry")
+    p_install.add_argument("installer")
+    p_install.add_argument("--name")
+    p_install.add_argument("--target", help="path to the installed .exe, if autodetection is ambiguous")
+    p_install.add_argument("--wine-binary", default="wine")
+    p_install.add_argument("--no-icon", action="store_true")
+    p_install.set_defaults(func=cmd_run_installer)
+
+    p_list = sub.add_parser("list", help="list installed apps")
+    p_list.set_defaults(func=cmd_list)
+
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
