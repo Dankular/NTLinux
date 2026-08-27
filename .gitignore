@@ -10,3 +10,6 @@
 /ntabi/lib/*.o
 /ntabi/lib/*.a
 /ntabi/tests/test_ntabi
+
+# Cross-compiled Windows binary - build with `make` in tooling/compat-db/ntexports/.
+/tooling/compat-db/ntexports/ntexports.exe

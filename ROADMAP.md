@@ -236,7 +236,11 @@ operations no longer use the normal Wine (wineserver) path. **Not met yet
       themselves (a real Wine source checkout, a full build — 30-60+
       minutes and gigabytes of dependencies — and validating against
       Wine's own tests). That's real, separate integration work for a
-      dedicated pass, not a corner that was cut here by accident.
+      dedicated pass, not a corner that was cut here by accident. Knowing
+      the *complete* NT-native surface to route (not just the handful
+      `ntabi` covers today) up front, from real Windows ground truth
+      rather than discovering gaps one crash at a time, is what
+      `tooling/compat-db/ntexports/` is for — see its README.
 
 **What Phase 2 actually proves, stated precisely:** the protocol, the
 daemon, and the client library are real and correct — genuine NT object
