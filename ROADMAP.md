@@ -253,13 +253,105 @@ it without behavior changing. That's the honest boundary of "prototype."
 
 ---
 
-## Phase 3 — Object and wait semantics ⬜
+## Phase 3 — Object and wait semantics 🟨 (everything concretely implementable is done and verified; two items explicitly deferred with reasoning)
 
 Move named objects, handle tables, wait-any/wait-all, sections, shared
 memory, process/thread metadata, completion ports, APC support toward
 NTLinux-native implementation.
 
 **Success criterion:** measured reduction in wineserver IPC traffic.
+**Not measurable yet — same reason as Phase 2's gap:** there's no real
+Wine process routing any traffic through `ntabi` yet (that needs the
+ntdll integration Phase 2 explicitly didn't attempt), so there is no
+wineserver IPC to measure a reduction *against*. Stated plainly, not
+glossed over — same honest boundary as Phase 2.
+
+**Task breakdown:**
+
+- [x] **Real per-process handle tables** — replaced Phase 2's flat handle
+      space (its single most-flagged simplification). `(owner_pid,
+      local_handle) -> object`: two processes can each validly hold
+      "handle 1" pointing at two completely different objects; using
+      another process's handle number gets `INVALID_HANDLE`; closing one
+      process's handle never disturbs another's numerically-identical
+      one. All real NT semantics this project's own Phase 2 README
+      flagged as missing. Verified live: a test that deliberately
+      constructs the numeric-collision case and confirms isolation both
+      directions.
+- [x] **Wait-any / wait-all** — `ntabi_wait_multiple` (up to
+      `NTABI_MAX_WAIT_HANDLES` = 16 handles at once; real NT's
+      `MAXIMUM_WAIT_OBJECTS` is 64, 16 is a documented prototype-scoped
+      limit). Wait-any reports which handle was satisfied and consumes
+      only that one; wait-all only returns once *every* handle is
+      simultaneously satisfiable, consumed together. Verified live and
+      timed: a wait-any correctly reports index 1 of 3 when only the
+      middle event is signaled; a wait-all provably does *not* return
+      after the first of two events is signaled, only after the second
+      arrives ~150ms later.
+- [x] **Sections / shared memory** — real POSIX shared memory, not a
+      simulation: `ntd` creates the backing `shm_open` object and hands
+      its name back; `ntabi_map_view_of_section` maps it *client-side*,
+      no further daemon round-trip needed since any process holding the
+      name can map the same memory independently. Verified live: one
+      process writes through its mapping, a second process (which opened
+      the section by name) reads exactly those bytes and writes back
+      through *its own* mapping, and the first process sees that
+      write — genuinely shared memory, not two independent copies.
+- [x] **Completion ports** — a wait-capable FIFO queue object:
+      `PostCompletion`/`RemoveCompletion`-equivalents, direct hand-off to
+      a waiting dequeuer when one exists, otherwise queued. No real file/
+      socket I/O exists in this prototype to drive it automatically —
+      posting is directly callable, standing in for what completed I/O
+      would normally trigger. Verified live: three posted completions
+      dequeue in FIFO order with correct payloads, and a `RemoveCompletion`
+      blocked in a separate process unblocks with the right payload only
+      once this process posts.
+- [x] **Process objects** — signaled (and stays signaled) once a target
+      pid exits, detected via `pidfd` polling on `ntd`'s existing 50ms
+      tick (no dedicated thread). Chosen specifically because `pidfd`
+      polling works for *any* permitted pid, not just `ntd`'s own
+      children, unlike `waitpid`/`waitid`. Verified live against a
+      process that is a child of the *test harness*, not of `ntd` —
+      proving the mechanism actually generalizes, not just working by
+      coincidence on a child.
+- [ ] **Thread objects — not implemented, deferred with reasoning.**
+      A meaningful NT Thread object needs an identity tied to a real
+      thread's execution context (suspend/resume, alertable state, APC
+      queue) that only exists once real Windows/Wine thread creation
+      routes through `ntabi` — which needs the same ntdll integration
+      Phase 2 already deferred. Building a Thread object type now would
+      mean either faking that identity (misleading) or duplicating a
+      process object with a different name (not actually Thread
+      semantics). Revisit once Phase 2's ntdll integration lands.
+- [ ] **APC (Asynchronous Procedure Call) support — not implemented,
+      deferred with reasoning.** Queuing a callback to run on another
+      thread requires real control over that thread's execution context
+      at its alertable-wait points — not something a userspace daemon can
+      provide to an arbitrary client thread without the client's own
+      runtime (ntdll) cooperating. Same root blocker as Thread objects:
+      no real thread identity to queue an APC *to* without ntdll
+      integration. Not attempted rather than built as something that
+      only superficially resembles APC semantics.
+
+**Verified live, end to end, in this session:** 38/38 test checks passing
+(`ntabi/tests/test_ntabi.c`, `make check`), including six genuinely
+cross-process tests (handle isolation in both directions, wait-any,
+wait-all, shared-memory section read *and write-back*, blocked
+completion-port dequeue, and process-exit detection for a non-child
+process) — each measuring real elapsed time to confirm actual blocking,
+not a lucky race. Three real bugs found and fixed by actually running the
+suite, not by inspection — a stale daemon process from an earlier crashed
+run left the shared-memory name held (test-harness cleanup issue, not a
+code bug); a missing `NTABI_OP_OPEN_COMPLETION` opcode meant a completion
+port had no valid way for a second process to reach it by name (real
+daemon gap, fixed); and `#define NTABI_PROTOCOL_VERSION 2u` made the
+shared-memory segment's own *name* literally end in `v2u`, because
+`#x` preprocessor stringification includes a literal's type suffix —
+caught from `ntd`'s own startup banner. Also fixed opportunistically: `ntd`
+didn't sweep remaining objects on a clean shutdown, leaking a Section's
+real backing `/dev/shm` entry if nothing had explicitly closed its
+handle — noticed as a leftover file after a fully-passing test run, not
+a test failure.
 
 ---
 

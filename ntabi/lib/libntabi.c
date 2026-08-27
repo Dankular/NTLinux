@@ -228,6 +228,121 @@ ntabi_status_t ntabi_close_handle(ntabi_conn_t *c, int32_t handle) {
     return submit(c, &req, &resp);
 }
 
+ntabi_status_t ntabi_wait_multiple(ntabi_conn_t *c, const int32_t *handles, int32_t count,
+                                    int wait_all, int32_t timeout_ms, int32_t *out_satisfied_index) {
+    if (count <= 0 || count > NTABI_MAX_WAIT_HANDLES) return NTABI_STATUS_INVALID_PARAMETER;
+    ntabi_request_t req = {0};
+    req.opcode = NTABI_OP_WAIT_MULTIPLE;
+    req.handle_count = count;
+    req.wait_all = wait_all;
+    req.timeout_ms = timeout_ms;
+    memcpy(req.handles, handles, sizeof(int32_t) * (size_t)count);
+    ntabi_response_t resp;
+    ntabi_status_t st = submit(c, &req, &resp);
+    if (out_satisfied_index) *out_satisfied_index = resp.satisfied_index;
+    return st;
+}
+
+ntabi_status_t ntabi_create_section(ntabi_conn_t *c, const char *name, int64_t size,
+                                     ntabi_section_info_t *out) {
+    ntabi_request_t req = {0};
+    req.opcode = NTABI_OP_CREATE_SECTION;
+    req.section_size = size;
+    fill_name(&req, name);
+    ntabi_response_t resp;
+    ntabi_status_t st = submit(c, &req, &resp);
+    if (out) {
+        out->handle = resp.handle;
+        out->size = resp.section_size;
+        snprintf(out->shm_name, sizeof(out->shm_name), "%s", resp.shm_name);
+    }
+    return st;
+}
+
+ntabi_status_t ntabi_open_section(ntabi_conn_t *c, const char *name, ntabi_section_info_t *out) {
+    ntabi_request_t req = {0};
+    req.opcode = NTABI_OP_OPEN_SECTION;
+    fill_name(&req, name);
+    ntabi_response_t resp;
+    ntabi_status_t st = submit(c, &req, &resp);
+    if (out) {
+        out->handle = resp.handle;
+        out->size = resp.section_size;
+        snprintf(out->shm_name, sizeof(out->shm_name), "%s", resp.shm_name);
+    }
+    return st;
+}
+
+ntabi_status_t ntabi_map_view_of_section(const ntabi_section_info_t *info, void **out_ptr) {
+    int fd = shm_open(info->shm_name, O_RDWR, 0);
+    if (fd < 0) return NTABI_STATUS_INTERNAL_ERROR;
+    void *ptr = mmap(NULL, (size_t)info->size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (ptr == MAP_FAILED) return NTABI_STATUS_INTERNAL_ERROR;
+    *out_ptr = ptr;
+    return NTABI_STATUS_SUCCESS;
+}
+
+ntabi_status_t ntabi_unmap_view_of_section(void *ptr, int64_t size) {
+    return munmap(ptr, (size_t)size) == 0 ? NTABI_STATUS_SUCCESS : NTABI_STATUS_INTERNAL_ERROR;
+}
+
+ntabi_status_t ntabi_create_completion(ntabi_conn_t *c, const char *name, int32_t *out_handle) {
+    ntabi_request_t req = {0};
+    req.opcode = NTABI_OP_CREATE_COMPLETION;
+    fill_name(&req, name);
+    ntabi_response_t resp;
+    ntabi_status_t st = submit(c, &req, &resp);
+    if (out_handle) *out_handle = resp.handle;
+    return st;
+}
+
+ntabi_status_t ntabi_open_completion(ntabi_conn_t *c, const char *name, int32_t *out_handle) {
+    ntabi_request_t req = {0};
+    req.opcode = NTABI_OP_OPEN_COMPLETION;
+    fill_name(&req, name);
+    ntabi_response_t resp;
+    ntabi_status_t st = submit(c, &req, &resp);
+    if (out_handle) *out_handle = resp.handle;
+    return st;
+}
+
+ntabi_status_t ntabi_post_completion(ntabi_conn_t *c, int32_t handle, int32_t key,
+                                      int64_t bytes, uint64_t overlapped) {
+    ntabi_request_t req = {0};
+    req.opcode = NTABI_OP_POST_COMPLETION;
+    req.handle = handle;
+    req.completion_key = key;
+    req.completion_bytes = bytes;
+    req.completion_overlapped = overlapped;
+    ntabi_response_t resp;
+    return submit(c, &req, &resp);
+}
+
+ntabi_status_t ntabi_remove_completion(ntabi_conn_t *c, int32_t handle, int32_t timeout_ms,
+                                        int32_t *out_key, int64_t *out_bytes, uint64_t *out_overlapped) {
+    ntabi_request_t req = {0};
+    req.opcode = NTABI_OP_REMOVE_COMPLETION;
+    req.handle = handle;
+    req.timeout_ms = timeout_ms;
+    ntabi_response_t resp;
+    ntabi_status_t st = submit(c, &req, &resp);
+    if (out_key) *out_key = resp.completion_key;
+    if (out_bytes) *out_bytes = resp.completion_bytes;
+    if (out_overlapped) *out_overlapped = resp.completion_overlapped;
+    return st;
+}
+
+ntabi_status_t ntabi_open_process(ntabi_conn_t *c, int32_t target_pid, int32_t *out_handle) {
+    ntabi_request_t req = {0};
+    req.opcode = NTABI_OP_OPEN_PROCESS;
+    req.target_pid = target_pid;
+    ntabi_response_t resp;
+    ntabi_status_t st = submit(c, &req, &resp);
+    if (out_handle) *out_handle = resp.handle;
+    return st;
+}
+
 const char *ntabi_status_string(ntabi_status_t status) {
     switch (status) {
         case NTABI_STATUS_SUCCESS: return "SUCCESS";
@@ -239,6 +354,7 @@ const char *ntabi_status_string(ntabi_status_t status) {
         case NTABI_STATUS_INVALID_PARAMETER: return "INVALID_PARAMETER";
         case NTABI_STATUS_LIMIT_REACHED: return "LIMIT_REACHED";
         case NTABI_STATUS_INTERNAL_ERROR: return "INTERNAL_ERROR";
+        case NTABI_STATUS_PROCESS_NOT_FOUND: return "PROCESS_NOT_FOUND";
         default: return "UNKNOWN";
     }
 }
