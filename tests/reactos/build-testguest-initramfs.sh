@@ -25,6 +25,20 @@ if [ ! -x "$BUSYBOX" ]; then
     echo "build-testguest-initramfs.sh: busybox not found (apt install busybox-static)" >&2
     exit 1
 fi
+# Real, reproducible bug found live on a second host (not this project's
+# original sandbox): Debian's plain `busybox` package installs a
+# *dynamically*-linked binary at this same path - it's genuinely
+# executable on the host, so the check above passes, but this
+# initramfs has no shared libraries at all. The guest kernel then panics
+# with "Failed to execute /init (error -2)" - a real ELF-interpreter
+# ENOENT, not an obviously-busybox-shaped error, easy to misdiagnose as
+# an initramfs-format problem instead of what it actually is. Checked
+# directly now rather than assumed: `ldd` succeeding (no "not a dynamic
+# executable") means it needs libraries this initramfs won't have.
+if ldd "$BUSYBOX" >/dev/null 2>&1; then
+    echo "build-testguest-initramfs.sh: $BUSYBOX is dynamically linked - it will panic the guest kernel with 'Failed to execute /init' since this initramfs carries no shared libraries. Install the real static build: apt install busybox-static (Debian/Ubuntu keeps it at the same /bin/busybox path via update-alternatives, so no path change needed here - just re-run after installing it)." >&2
+    exit 1
+fi
 cp "$BUSYBOX" "$ROOT/bin/busybox"
 
 if [ ! -x "$HERE/ntbridge-guest-test" ]; then

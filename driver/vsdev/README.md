@@ -120,6 +120,39 @@ behavior never changed.
 
 ## Known gaps, stated precisely
 
+- **`run-test.sh`'s desktop icon launch is a real, reproducible, still-
+  unresolved flake on current ReactOS nightlies — found live on two
+  independent hosts, not fixed.** A later pass re-ran this script on
+  two new, real hosts (a Windows machine with real QEMU, and a separate
+  Linux cloud VPS with a real mingw-w64/mtools/QEMU install — see
+  `ROADMAP.md` Phase 5's Windows/Linux re-verification for the full
+  environment accounts) against a current ReactOS x64 nightly
+  (`0.4.16-amd64-dev` build 2669, newer than the one `dismiss-dialog`
+  was fixed against). `vsdev.sys`/`vsdev_test.exe` build and link
+  cleanly with the real `x86_64-w64-mingw32-gcc` toolchain on both
+  hosts (confirmed live), and the LiveCD language dialog now dismisses
+  correctly (the `dismiss-dialog` fix above still holds). But the next
+  step — clicking an empty desktop area, then `sendkey c` to jump
+  keyboard focus to the "Command Prompt" icon by its first letter, then
+  `ret` to launch it — reproducibly does **not** open a console window:
+  a post-launch screendump (added during this pass, see `run-test.sh`)
+  shows the desktop unchanged, icon not even highlighted/selected, on
+  three separate attempts across both hosts. Bumping the timing (2s → 4s
+  before the launch keystroke, 8s → 15s after) made no difference,
+  ruling out simple slowness. Root cause not chased further this pass
+  (budget) — plausibly a real change in this desktop-icon-first-letter-
+  jump behavior in the ReactOS builds between when this was last
+  verified and now, or a difference in how the desktop ListView takes
+  focus on newer builds; not confirmed either way. **What this means
+  concretely: the legacy `sc create`/`sc start` load path this file
+  documents above as "verified live" was true when written and remains
+  architecturally correct (the driver itself never changed), but is not
+  currently re-reproducible by `run-test.sh` unattended against a
+  current nightly** — a real regression in the test's own environment
+  dependency, not in `vsdev.sys`. Real, separate follow-up: either find
+  a more robust way to open a console (e.g. Win+R "Run" dialog, if that
+  proves more reliable than desktop icon focus) or diagnose the icon-
+  launch failure directly with ReactOS's own debug output.
 - **PnP-triggered load never exercised.** `vsdev.inf` + `AddDevice`
   exist and are believed correct (same shape as the legacy path that
   *did* get verified, sharing `VsdevCreateDeviceObject`), but a real

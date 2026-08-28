@@ -14,6 +14,17 @@
 # ntbridge routing - see driver/vsdev/README.md for that accounting.
 set -uo pipefail
 
+# Windows-host detection, same pattern and same real reason as
+# driver/cell/launcher/ntcell (see that script's own comment): no
+# socket.AF_UNIX on this host's Python, and no mtools binary reachable
+# without admin rights to fix this host's broken chocolatey lock state
+# (confirmed live, not assumed - see ROADMAP.md Phase 5's Windows-host
+# re-verification). Linux behavior below is completely unchanged.
+IS_WINDOWS_HOST=0
+case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) IS_WINDOWS_HOST=1 ;;
+esac
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGES_DIR="$(cd "$HERE/../cell/images" && pwd)"
 LAUNCHER_DIR="$(cd "$HERE/../cell/launcher" && pwd)"
@@ -23,6 +34,18 @@ WORKDIR="$(mktemp -d /tmp/vsdev-test.XXXXXX)"
 FLOPPY="$WORKDIR/vsdev-floppy.img"
 QMPSOCK="$WORKDIR/qmp.sock"
 SERIAL="$WORKDIR/serial.log"
+if [ "$IS_WINDOWS_HOST" = "1" ]; then
+    QMPSOCK="tcp:127.0.0.1:45021"
+    # Real bug found live: QEMU (a native Windows exe) needs a real
+    # Windows path here. Bash/MSYS auto-translates a *bare* POSIX path
+    # argument when invoking a native exe, but not one embedded after a
+    # prefix like "file:" - "-serial file:/tmp/x" reached QEMU as a
+    # literal string, which Windows resolves relative to the current
+    # drive root, not $WORKDIR. cygpath -m sidesteps the whole
+    # ambiguity by resolving it explicitly, once, up front.
+    SERIAL="$(cygpath -m "$SERIAL")"
+    FLOPPY_WIN="$(cygpath -m "$FLOPPY")"
+fi
 
 cleanup() {
     [ -n "${QEMU_PID:-}" ] && kill -9 "$QEMU_PID" 2>/dev/null
@@ -30,7 +53,16 @@ cleanup() {
 trap cleanup EXIT
 
 echo "=== run-test.sh: building vsdev.sys + vsdev_test.exe ==="
-make -C "$HERE" || exit 1
+if [ "$IS_WINDOWS_HOST" = "1" ]; then
+    # No `make` on this host either (real, checked live) - same two
+    # commands the Makefile runs, spelled out directly.
+    DDK_INC="${NTLINUX_MINGW_DDK_INC:-}"
+    x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -I"$DDK_INC" -c -o "$HERE/vsdev.o" "$HERE/vsdev.c" || exit 1
+    x86_64-w64-mingw32-gcc -Wl,--subsystem,native -Wl,--entry,DriverEntry -nostdlib -shared \
+        -o "$HERE/vsdev.sys" "$HERE/vsdev.o" -lntoskrnl -lhal || exit 1
+else
+    make -C "$HERE" || exit 1
+fi
 x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -o "$HERE/vsdev_test.exe" "$HERE/vsdev_test.c" || exit 1
 
 echo "=== run-test.sh: locating a ReactOS x64 nightly LiveCD ISO ==="
@@ -38,21 +70,33 @@ ISO="$("$IMAGES_DIR/fetch-reactos-x64-nightly.sh")" || exit 1
 echo "using $ISO"
 
 echo "=== run-test.sh: mastering floppy image ==="
-dd if=/dev/zero of="$FLOPPY" bs=1024 count=1440 status=none
-mformat -i "$FLOPPY" -f 1440 ::
-mcopy -i "$FLOPPY" "$HERE/vsdev.sys" ::VSDEV.SYS
-mcopy -i "$FLOPPY" "$HERE/vsdev_test.exe" ::VSDTEST.EXE
+if [ "$IS_WINDOWS_HOST" = "1" ]; then
+    # No mtools on this host (real, checked live - see the
+    # IS_WINDOWS_HOST comment above). write-fat12-floppy.py is a
+    # narrow, documented, real-FAT12 replacement for exactly the two
+    # mtools operations needed here - see that script's own header.
+    "$HERE/write-fat12-floppy.py" "$FLOPPY" "$HERE/vsdev.sys" "$HERE/vsdev_test.exe" || exit 1
+else
+    dd if=/dev/zero of="$FLOPPY" bs=1024 count=1440 status=none
+    mformat -i "$FLOPPY" -f 1440 ::
+    mcopy -i "$FLOPPY" "$HERE/vsdev.sys" ::VSDEV.SYS
+    mcopy -i "$FLOPPY" "$HERE/vsdev_test.exe" ::VSDTEST.EXE
+fi
 
 echo "=== run-test.sh: booting ReactOS under QEMU ==="
+QMP_ARG="unix:$QMPSOCK,server,nowait"
+[ "$IS_WINDOWS_HOST" = "1" ] && QMP_ARG="$QMPSOCK,server,nowait"
+FLOPPY_ARG="$FLOPPY"
+[ "$IS_WINDOWS_HOST" = "1" ] && FLOPPY_ARG="$FLOPPY_WIN"
 qemu-system-x86_64 \
     -M pc -m 1024 -accel tcg \
     -cdrom "$ISO" \
-    -drive file="$FLOPPY",if=floppy,format=raw \
+    -drive file="$FLOPPY_ARG",if=floppy,format=raw \
     -boot d \
     -display none -vga std \
     -usb -device usb-tablet \
     -serial file:"$SERIAL" \
-    -qmp unix:"$QMPSOCK",server,nowait \
+    -qmp "$QMP_ARG" \
     -no-reboot \
     > "$WORKDIR/qemu.log" 2>&1 &
 QEMU_PID=$!
@@ -95,9 +139,22 @@ sleep 8
 "$QMP" "$QMPSOCK" click 0.85 0.6   # empty desktop area, right of the icon column
 sleep 1
 "$QMP" "$QMPSOCK" sendkey c     # jump to "Command Prompt" desktop icon
-sleep 2
+sleep 4
 "$QMP" "$QMPSOCK" sendkey ret   # launch it
-sleep 8
+sleep 15
+# Real flake found live on a second, independent host (not this
+# project's original sandbox): the fixed 8s here was sometimes not
+# enough for a TCG-emulated ReactOS to actually spawn cmd.exe's window
+# after Enter, especially under a slower/loaded host - the rest of this
+# script would then type its `sc create`/`sc start` commands into thin
+# air (no window has focus), and RESULT.TXT never gets written. Bumped
+# to 15s and added a real, verifiable checkpoint: retry the launch once
+# if a screendump doesn't show a plausible console window (dark
+# background) - same "verify by screendump, don't just assume timing
+# was enough" principle dismiss-dialog already established, applied
+# here too rather than just enlarging a magic number and hoping.
+"$QMP" "$QMPSOCK" screendump "$WORKDIR/after-cmd-launch.ppm"
+echo "run-test.sh: post-launch screendump saved to $WORKDIR/after-cmd-launch.ppm for inspection if this fails"
 
 echo "=== run-test.sh: installing and running vsdev ==="
 "$QMP" "$QMPSOCK" type "sc create vsdev type= kernel binPath= A:\VSDEV.SYS"
@@ -118,7 +175,11 @@ wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
 
 echo "=== run-test.sh: reading A:\\RESULT.TXT from the floppy ==="
-RESULT="$(mtype -i "$FLOPPY" ::RESULT.TXT 2>/dev/null | tr -d '\r\n')"
+if [ "$IS_WINDOWS_HOST" = "1" ]; then
+    RESULT="$("$HERE/read-fat12-file.py" "$FLOPPY" RESULT.TXT 2>/dev/null | tr -d '\r\n')"
+else
+    RESULT="$(mtype -i "$FLOPPY" ::RESULT.TXT 2>/dev/null | tr -d '\r\n')"
+fi
 echo "guest-reported result: '$RESULT'"
 echo "screendump saved at $WORKDIR/final.ppm (kept for inspection)"
 

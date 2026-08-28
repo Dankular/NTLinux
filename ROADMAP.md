@@ -1595,7 +1595,7 @@ from the real PnP manager in each case.
 
 ---
 
-## Phase 15 — WireGuard network security (nearest-server ProtonVPN) 🟨 (server-selection logic implemented and verified live; tunnel bring-up not attempted — sandbox has no loadable WireGuard kernel module and no exercised raw-UDP egress path)
+## Phase 15 — WireGuard network security (nearest-server ProtonVPN) 🟨 (server-selection logic implemented and verified live; tunnel bring-up not attempted in this project's original sandbox — but a later pass on a real, unrestricted Linux host confirmed the kernel-module blocker below is a sandbox limitation, not architectural — see "A real host without that restriction" further down)
 
 **Success criterion:** NTLinux ships a default-available WireGuard
 security layer that automatically pins its tunnel to the lowest-latency-
@@ -1678,6 +1678,102 @@ capability (VFIO/IOMMU in Phase 6, PnP install flows in Phase 14, and
 now kernel WireGuard/raw UDP here) is architecturally out of reach: the
 software that *can* be tested here was written and verified for real:
 what's left needs a different environment, not different code.
+
+### A real host without that restriction — checked directly, not assumed still blocked
+
+A later session got real SSH access to a genuine, unrestricted Linux
+host (a Hetzner Cloud vServer, Debian 13/trixie, real systemd PID 1,
+`/dev/kvm` absent but ordinary kernel module loading and raw networking
+both allowed — unlike this project's original egress-restricted
+sandbox). Checked the two blockers above directly rather than assuming
+they still applied everywhere:
+
+```
+# modprobe wireguard
+# lsmod | grep wireguard
+wireguard              118784  0
+libchacha20poly1305     16384  1 wireguard
+ip6_udp_tunnel           16384  1 wireguard
+udp_tunnel               36864  1 wireguard
+curve25519_x86_64        36864  1 wireguard
+libcurve25519_generic     45056  2 curve25519_x86_64,wireguard
+
+# ip link add wg-test type wireguard
+# ip link show wg-test
+3: wg-test: <POINTOPOINT,NOARP> mtu 1420 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+# wg show wg-test
+interface: wg-test
+```
+
+**Real, live confirmation:** the kernel WireGuard module loads cleanly
+and a genuine `wireguard`-type network interface creates successfully —
+the "no loadable WireGuard kernel module" blocker was a property of
+this project's original sandbox, not of WireGuard support in general or
+of anything this codebase does. Still not attempted, for real reasons
+distinct from the kernel-module blocker: an actual handshake needs a
+second real WireGuard peer (this project doesn't fabricate ProtonVPN
+account credentials — see the boundary stated above, unchanged), and
+`ntlinux-wireguard-nearest.service` still needs a template profile and
+systemd unit install this pass didn't set up. The kernel-level
+blocker specifically is resolved, on real hardware; the credential/
+integration-testing boundary is not, and shouldn't be worked around.
+
+---
+
+## Cross-host re-verification pass (real Windows host + a real Linux build server)
+
+A later session ran with two new, real, non-sandbox environments this
+project hadn't had before: a Windows 11 host with a real MSVC + QEMU
+install (used throughout Phase 11 above and the `ntcell` Windows
+re-verification in Phase 4), and — via real SSH access the user
+provided — a genuine Hetzner Cloud Linux vServer (`root@`, Debian 13),
+used as a real build/test server. Real toolchain gaps hit and fixed
+along the way, each narrow and documented in place rather than worked
+around silently: no admin rights to fix a broken `chocolatey` lock
+state on the Windows host (worked around with no-installer WinLibs
+mingw-w64 + a standalone `7zr.exe`, both fetched fresh, never vendored);
+no `mtools` reachable on Windows (`driver/vsdev/write-fat12-floppy.py` /
+`read-fat12-file.py` — a real, minimal FAT12 reader/writer, narrowly
+reimplementing exactly the two operations `run-test.sh` needs); a
+dynamically-linked `busybox` package silently breaking the ntbridge
+test's initramfs on the new Linux host (`tests/reactos/
+build-testguest-initramfs.sh` now checks for this directly with `ldd`
+rather than trusting that "a busybox exists" means "a working one").
+
+**Re-verified for real, not re-asserted:**
+
+- **`ntabi`/`ntd` (Phases 2/3/12):** `make check` — **60/60 tests
+  passing** on the real Linux build server, byte-for-byte the same
+  suite and results this project's original sandbox established.
+- **ntbridge protocol/transport (Phases 4/7):** `tests/reactos/
+  run-test.sh` — real **PASS** on the Linux build server after the
+  `busybox-static` fix above: guest heartbeat detected, 3/3 seeded
+  devices ACKed, over a real QEMU VM boundary on new hardware.
+- **`vsdev.sys`/`vsdev_test.exe` (Phase 5):** build cleanly with the
+  real `x86_64-w64-mingw32-gcc` toolchain on *both* new hosts (WinLibs
+  on Windows, the real Debian `gcc-mingw-w64-x86-64` package on Linux)
+  — the driver itself, not just the toolchain claim, confirmed portable.
+  The automated `run-test.sh` load/I/O test itself did **not** reach
+  PASS on either new host this pass — see `driver/vsdev/README.md`'s
+  "Known gaps" for the precise, screenshot-documented reason: a real,
+  reproducible flake in the script's desktop-icon-launch step against
+  current ReactOS nightlies, not a driver regression (`dismiss-dialog`
+  and the LiveCD boot itself both still work correctly).
+- **WireGuard (Phase 15):** see that phase's own new subsection — the
+  kernel-module blocker is resolved on real hardware, confirmed live.
+
+**What this pass does not change:** none of Phase 6 (VFIO/IOMMU —
+still needs real second-GPU hardware), Phase 10 (Steam/GPU gaming
+verification — needs a real Linux desktop session with a GPU, not a
+headless build server), Phase 12's Wine `ntdll` integration (still
+needs a real Wine source build, 30-60+ minutes, not attempted), or
+Phase 13 (RosBE — still a materially larger, separate undertaking than
+the mingw-w64 DDK toolchain used throughout this pass). Toolchain
+availability was this pass's real, common blocker across several
+phases at once; hardware/environment-shape blockers (a second GPU
+behind VFIO, a real gaming desktop session, a Wine/RosBE source build)
+are unrelated to it and remain exactly as documented in each phase
+above.
 
 ---
 
