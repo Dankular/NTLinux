@@ -61,4 +61,28 @@ repeatedly with real screendumps, not by inspection) and the two real
 bugs `dismiss-dialog`'s own implementation went through before it held
 up under a fully unattended run.
 
+## Re-verified on a second, real host: Windows + a real QEMU install
+
+Everything above was first verified in this project's original Linux
+sandbox. A later session ran on a real Windows 11 host that turned out
+to already have a full QEMU 11.0.0 install (`C:\Program Files\qemu`) —
+checked directly per Rule 1, not assumed absent because the dev sandbox
+never had one. `ntcell boot-reactos` against a freshly-fetched ReactOS
+x64 nightly LiveCD ran for real there, reaching a genuine, fully
+rendered ReactOS desktop, then interactively driven further via
+`qmp_console.py click`/`sendkey` over a live QMP connection — screenshots
+committed as evidence in `driver/cell/screenshots/`, full account in
+`ROADMAP.md` Phase 4 ("Re-verified on a genuinely different host").
+
+**One real, narrow, cross-platform bug found there and fixed:** the
+Python on that Windows host has no `socket.AF_UNIX` at all, so the
+unix-socket QMP/monitor endpoints this script always used are simply
+unusable on Windows. `ntcell` now detects a Windows host (MSYS/
+Git-Bash/Cygwin `uname`) and switches to a TCP loopback QMP/monitor
+endpoint in that case only (`IS_WINDOWS_HOST`, near the top of this
+script); `qmp_console.py`/`qmp_screendump.py` both now accept either a
+`tcp:HOST:PORT` endpoint or the original unix-socket path. Linux
+behavior is completely unchanged — this widens the launcher's real
+portability, it doesn't special-case around a one-off problem.
+
 See [`docs/ARCHITECTURE.md`](/docs/ARCHITECTURE.md) for full architectural context and [`ROADMAP.md`](/ROADMAP.md) for phase sequencing. Before implementing anything here, check whether the capability already exists upstream (Wine / Proton / ReactOS / Linux / Mesa / DXVK / vkd3d-proton / Gamescope / PipeWire / VFIO-IOMMU-KVM) per Rule 1 in `CLAUDE.md`.

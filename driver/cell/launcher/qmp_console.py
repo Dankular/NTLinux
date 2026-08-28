@@ -18,6 +18,14 @@ Usage:
   qmp_console.py <qmp-socket> dismiss-dialog <x-fraction> <y-fraction> \\
       <r> <g> <b> [--tolerance N] [--timeout SECONDS] [--interval SECONDS]
 
+<qmp-socket> is either a filesystem path to a QMP unix socket (the
+original, Linux-sandbox-verified form) or "tcp:HOST:PORT". The tcp:
+form is a real, narrow addition found live on a Windows host: that
+build of Python for Windows has no socket.AF_UNIX at all, so ntcell
+falls back to a TCP QMP endpoint there (see ntcell's IS_WINDOWS_HOST
+branch) and this script needs to speak it too. Unix-socket behavior on
+Linux is unchanged.
+
 `dismiss-dialog` is the real fix for a genuine, reproducible flake this
 project hit (driver/vsdev/run-test.sh, see its README): earlier
 versions sent exactly two blind `ret` keypresses at fixed offsets to
@@ -65,10 +73,16 @@ def read_json(sock):
     raise RuntimeError("QMP connection closed before a complete response")
 
 
-def connect(sock_path):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(10)
-    s.connect(sock_path)
+def connect(endpoint):
+    if endpoint.startswith("tcp:"):
+        _, host, port = endpoint.split(":", 2)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(10)
+        s.connect((host, int(port)))
+    else:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(10)
+        s.connect(endpoint)
     read_json(s)  # greeting
     qmp_call(s, "qmp_capabilities")
     return s

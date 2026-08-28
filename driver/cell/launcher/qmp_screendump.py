@@ -6,11 +6,33 @@ that the QEMU process didn't exit), the same way earlier phases of this
 project verified a real rendered window rather than trusting a process
 exit code alone.
 
-Usage: qmp_screendump.py <qmp-unix-socket> <output-ppm-path>
+Usage: qmp_screendump.py <qmp-endpoint> <output-ppm-path>
+
+<qmp-endpoint> is either a filesystem path to a QMP unix socket (the
+original, Linux-sandbox-verified form), or "tcp:HOST:PORT" for a QMP
+TCP endpoint. The tcp: form exists for real, narrow reasons found live
+on a Windows host: this build of Python for Windows has no
+socket.AF_UNIX at all (AttributeError, not a permissions/path issue),
+so ntcell falls back to a TCP QMP endpoint on Windows hosts (see
+ntcell's IS_WINDOWS_HOST branch) and this script needs to speak it.
+Unix-socket behavior on Linux is unchanged.
 """
 import json
 import socket
 import sys
+
+
+def qmp_connect(endpoint):
+    if endpoint.startswith("tcp:"):
+        _, host, port = endpoint.split(":", 2)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(10)
+        s.connect((host, int(port)))
+        return s
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(10)
+    s.connect(endpoint)
+    return s
 
 
 def qmp_call(sock, command, arguments=None):
@@ -39,11 +61,9 @@ def main():
     if len(sys.argv) != 3:
         print(__doc__, file=sys.stderr)
         return 1
-    sock_path, out_path = sys.argv[1], sys.argv[2]
+    endpoint, out_path = sys.argv[1], sys.argv[2]
 
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(10)
-    s.connect(sock_path)
+    s = qmp_connect(endpoint)
 
     greeting = read_json(s)  # QMP sends a greeting with capabilities first
     if "QMP" not in greeting:

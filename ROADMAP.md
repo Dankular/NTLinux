@@ -458,6 +458,83 @@ kind of thing that would surface there) — that needs driving ReactOS's
 real boot/install/driver-load process, which Phase 5 takes a first,
 simpler run at with a standalone test driver before this one.
 
+### Re-verified on a genuinely different host: real QEMU on Windows, not just the original Linux/TCG sandbox
+
+Every `ntcell`/QMP result above was first established in this
+project's original Linux development sandbox. This session ran on a
+real Windows 11 host that turned out to already have a full, real QEMU
+11.0.0 install (`C:\Program Files\qemu`) — checked directly rather than
+assumed absent, per Rule 1. Fetched a fresh ReactOS x64 nightly LiveCD
+(`driver/cell/images/fetch-reactos-x64-nightly.sh`, unmodified) and ran
+`ntcell boot-reactos` against it on this host, for real.
+
+**One real, narrow, cross-platform bug found and fixed, not worked
+around:** the Python actually present on this Windows host has no
+`socket.AF_UNIX` at all (`AttributeError`, not a path/permissions
+issue) — `qmp_screendump.py`/`qmp_console.py`'s unix-socket QMP
+connection is simply unusable there. Fixed narrowly: `ntcell` now
+detects a Windows host (MSYS/Git-Bash/Cygwin `uname`) and uses a TCP
+loopback QMP/monitor endpoint instead of a unix socket in that case
+only; both Python helpers now accept either a `tcp:HOST:PORT` or the
+original unix-socket-path endpoint. Linux behavior (unix sockets) is
+completely unchanged — this is a real portability fix, not a
+Windows-only hack bolted on top.
+
+**Verified live, screenshots committed as real evidence** (same
+standard `driver/vsdev/screenshots/` already established for this
+project):
+
+![ReactOS x64 nightly booting under real QEMU on Windows - PnP device install in progress](screenshots/windows-qemu-boot-progress.png)
+
+A genuine mid-boot frame — ReactOS actually enumerating/installing
+devices, not a static splash. Continuing to boot reaches the real
+LiveCD language-selection dialog, the same screen this project's
+original Linux sandbox first captured:
+
+![ReactOS LiveCD language dialog, real QEMU on Windows](screenshots/windows-qemu-livecd-dialog.png)
+
+Went further than any previous pass: kept this QEMU instance alive and
+drove it interactively over the live TCP QMP connection with
+`qmp_console.py click`/`sendkey`, the same primitives `driver/vsdev/
+run-test.sh` already established for Phase 5. A synthetic click landed
+precisely on the dialog's "Next" button (visible focus rectangle,
+cursor exactly on target):
+
+![Next button focused after a real synthetic QMP click](screenshots/windows-qemu-livecd-dialog-clicked.png)
+
+Sending a synthetic Enter key genuinely advanced the wizard to a real,
+fully rendered ReactOS desktop — taskbar, Start button, system tray
+clock, desktop icons:
+
+![A real, live ReactOS x64 desktop, reached via synthetic QMP input on this Windows host](screenshots/windows-qemu-desktop-live.png)
+
+**An honest gap, not glossed over:** attempted to go one step further
+and open the desktop's Command Prompt icon (double-click, then a
+select-then-Enter fallback) to get a live `cmd.exe` session the way
+Phase 5's driver test does. Both attempts only *selected* the icon —
+no window opened in either try, in the time observed:
+
+![Command Prompt icon selected but not launched - a real, unresolved finding](screenshots/windows-qemu-desktop-cmd-icon-selected.png)
+
+Not chased further this pass (budget) — plausibly the same class of
+desktop-focus/timing flake `driver/vsdev/README.md`'s "Known gaps"
+already documents for `dismiss-dialog`, not investigated to a root
+cause here. Also not attempted on this host: `driver/vsdev/run-test.sh`
+itself (needs `x86_64-w64-mingw32-gcc` and `mtools`, both confirmed
+absent from this Windows host — a real, separate toolchain gap,
+correctly left alone rather than papered over by installing a new
+compiler unprompted).
+
+**What this proves, stated precisely:** the `ntcell` launcher, real
+ReactOS boot, and QMP-driven synthetic input are now confirmed to work
+on a second, genuinely different host/OS/QEMU-build combination, not
+just the one sandbox that originally verified them — with one real,
+narrow, now-fixed cross-platform bug found along the way. It does not
+newly prove anything about `ntbridge_pnp.c` or Phase 14's PnP-install
+flows specifically; the Command Prompt gap above shows real
+desktop-level UI automation on Windows still has an unresolved rough
+edge.
+
 ---
 
 ## Phase 5 — First Windows driver 🟨 (loads and performs real I/O, verified live; PnP-triggered load and ntbridge routing not yet attempted)
@@ -1198,6 +1275,60 @@ in for Phase 7's network interface, or `--usb-echo` stood in for Phase
 8's USB bridge. This blocker needs real user hardware to ever attempt,
 in any sandbox shaped like the ones this project has used.
 
+### A real GPU became available this session — what it did and didn't change
+
+This session ran on a Windows host with a genuine, healthy discrete GPU
+(`Get-CimInstance Win32_VideoController`: NVIDIA GeForce RTX 4060, WDDM
+3.1, driver 32.0.15.9186, `Status: OK` — plus a "Parsec Virtual Display
+Adapter," indicating this host is itself remotely operated). Checked
+directly, rather than assumed, what that does and doesn't unblock:
+
+- **Doesn't touch blocker 3.** VFIO/IOMMU passthrough is a Linux kernel
+  facility; this host is Windows. A real GPU being present is not the
+  same as a real *second* GPU behind a Linux VFIO/IOMMU path — the two
+  things blocker 3 needs (a second card, and Linux's VFIO stack) are
+  both still categorically absent here. No regression, no progress on
+  this blocker specifically.
+- **Doesn't touch blocker 1** — ReactOS's own WDDM/DXGKRNL work happens
+  upstream, not in this sandbox, regardless of local hardware.
+- **Did let blocker 2's open question get sharpened with a real,
+  live-run cross-compiler comparison it couldn't get before.** The real
+  MSVC toolchain (Visual Studio 2022 Professional, `cl.exe`
+  14.44.35207) is present on this host. Compiled `driver/gpu/`'s exact
+  probe — the same `dispmprt.h` `static_assert(FIELD_OFFSET(
+  DXGK_CHILD_CAPABILITIES, HpdAwareness) == 12, ...)` that fails under
+  this project's mingw-w64 toolchain — against the same unmodified WDK
+  10.0.22621.0 headers, this time with MSVC (the compiler these headers
+  are authored and validated for). **It compiles clean, `static_assert`
+  and all.** That pins the failure specifically to GCC/mingw-w64's own
+  struct-layout computation for this type diverging from MSVC's — not a
+  header defect (already suspected, now directly confirmed rather than
+  inferred) — while leaving the actual root cause of *why* GCC computes
+  a different offset still open; that would need a real mingw-w64
+  compile on this same host for a true side-by-side (mingw-w64/GCC is
+  confirmed absent from this host, and installing one — feasible via the
+  `choco` package manager already present here — was deliberately not
+  done unprompted, as a new system toolchain install is a more
+  consequential, unrequested change than this pass's scope).
+- **Checked, and confirmed closed off: this struct's live *runtime*
+  data is still unreachable, even with real hardware.** Grepped the
+  WDK's full public usermode `D3DKMTQueryAdapterInfo` query-type enum
+  (`d3dkmthk.h`, `KMTQAITYPE_*`, 60+ real entries) end to end —
+  `DXGK_CHILD_CAPABILITIES` is a kernel-mode-only DXGKRNL↔miniport
+  contract type with no usermode escape exposing it. Getting this real
+  driver's actual live `HpdAwareness` byte offset (as opposed to what
+  the header text says it should be) would require loading an actual
+  kernel-mode driver or kernel debugger on this host — correctly out of
+  scope without explicit authorization, not attempted.
+
+Net effect: real GPU hardware turned "the assert fails under our
+toolchain, cause unknown" into "the assert is correct per the header's
+authoring compiler; the mingw-w64 divergence is real, confirmed
+GCC-side, and still open in its root cause" — genuine, narrower
+progress on blocker 2, with blockers 1 and 3 unchanged. See
+`driver/gpu/README.md` for the full account, including the exact probe
+file and build invocation.
+
 ### What this means for "in full"
 
 The three blockers are still independent — fixing one doesn't unblock
@@ -1205,10 +1336,15 @@ the others — but they're no longer equally unresolved. Blocker 2 moved
 from "hard toolchain gap" to "real, fetchable, mostly-compiling, with
 one genuine unresolved ABI question" — the one blocker this pass
 actually made concrete progress on, verified live rather than just
-re-described. Blockers 1 (ReactOS's own early/2D-only WDDM) and 3 (no
-VFIO/IOMMU hardware in any sandbox this project has run in) are
-unchanged and still real. `docs/DECISIONS.md` ADR-0003 carries the same
-correction. Revisit this phase once blocker 3 lifts (real hardware with
+re-described. A later pass, run on a host with a real GPU and a real
+MSVC toolchain, narrowed that same open question further (see "A real
+GPU became available this session" above) without closing it — still a
+genuine, unresolved cross-compiler ABI question, now confirmed
+GCC/mingw-w64-side rather than a header defect. Blockers 1 (ReactOS's
+own early/2D-only WDDM) and 3 (no VFIO/IOMMU hardware in any sandbox
+this project has run in) are unchanged and still real. `docs/DECISIONS.md`
+ADR-0003 carries the same correction. Revisit this phase once blocker 3
+lifts (real hardware with
 VFIO/IOMMU available) — at that point blocker 2's remaining ABI-layout
 question becomes real, concrete gating work with an actual starting
 point (`driver/gpu/wddm-probe.c`), not a re-investigation from zero, and
@@ -1225,6 +1361,24 @@ ADR-0006) had already established the right instinct months earlier:
 check whether a real, legitimate upstream source has what's missing
 before declaring it absent. That check wasn't made here the first time,
 and should have been.
+
+### A separate, adjacent capability found via this research: a real Parsec VDD display fallback (not part of this phase's own blockers)
+
+Stated up front so it's never conflated with the above: this resolves
+**none** of the three blockers. It's a distinct, smaller capability
+that surfaced because this research pass's host happened to already
+have "Parsec Virtual Display Adapter" (ParsecVDA) installed and healthy
+— the same adapter cited above as evidence this host is remotely
+operated. `driver/gpu/parsec-fallback/` is a real usermode client for
+its public control API (`parsec-vdd.h`, BSD-3-clause,
+github.com/nomi-san/parsec-vdd) — live-verified on this host:
+`Get-CimInstance`-confirmed `DEVICE_OK`, driver version 45, and a real
+add/remove cycle where `GetSystemMetrics(SM_CMONITORS)` genuinely went
+1 → 2 → 1, read back from Windows itself, not asserted. Doesn't touch
+ReactOS, VFIO/IOMMU, or WDDM/DXGKRNL — it's a fallback display path
+usable today on hosts that already carry this adapter, nothing more.
+See `driver/gpu/parsec-fallback/README.md` for the full live-run output
+and exact scope boundary.
 
 ---
 
