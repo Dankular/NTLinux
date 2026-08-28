@@ -1,0 +1,31 @@
+[
+  {
+    "id": "wine-notepad-ntloader",
+    "name": "Notepad (Wine's own bundled notepad.exe)",
+    "kind": "application",
+    "version": "bundled with this session's Wine",
+    "windows_target": "win7",
+    "test_status": "verified",
+    "compat_tool": "ntloader",
+    "driver_refs": ["ntloader/ntloader.c"],
+    "notes": "Real seed entry, not a placeholder: ntloader/README.md and ROADMAP.md Phase 1 both record `./notepad.exe` (Wine's bundled copy) launched directly via ntlinux-pe.conf's binfmt_misc registration, with no explicit `wine` invocation - a real window appeared on a virtual display. First real, true entry in this database rather than empty scaffolding.",
+    "last_tested": "2026-08-28"
+  },
+  {
+    "id": "ntbridge-vsdev",
+    "name": "vsdev (NTLinux's first Windows kernel driver)",
+    "kind": "driver",
+    "version": "0.1.0.0",
+    "windows_target": "win7",
+    "test_status": "verified",
+    "driver_refs": ["driver/vsdev/vsdev.c", "driver/vsdev/vsdev.inf"],
+    "known_bugs": [
+      {
+        "summary": "Legacy `sc start` load path never called AddDevice, so the device object never existed even though the service reported RUNNING",
+        "workaround": "VsdevCreateDeviceObject is now called directly from DriverEntry too, not only AddDevice"
+      }
+    ],
+    "notes": "Real seed entry: driver/vsdev/README.md and ROADMAP.md Phase 5 record two full live runs on a real ReactOS x64 kernel under QEMU (sc create/sc start -> STATE: RUNNING, then vsdev_test.exe's CreateFile/WriteFile/ReadFile round-trip -> PASS), reproduced after the legacy-load fix. PnP-triggered load path is still unverified - see ROADMAP.md Phase 14.",
+    "last_tested": "2026-08-28"
+  }
+]

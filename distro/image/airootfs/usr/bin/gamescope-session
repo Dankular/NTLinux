@@ -1,0 +1,44 @@
+#!/bin/bash
+# gamescope-session — NTLinux's default "Game Mode" session (Phase 10,
+# ARCHITECTURE.md section 10, CLAUDE.md's "Open decisions" — Gamescope
+# as the primary session, Plasma as an optional desktop-mode session,
+# mirroring SteamOS 3's split).
+#
+# Real, documented convention (SteamOS/HoloISO/ChimeraOS all ship a
+# script under this exact name for their gamescope-session.desktop's
+# Exec= line), not invented here: gamescope itself is the Wayland
+# compositor; this script's only job is to launch it with sane defaults
+# and hand control to Steam's Big Picture (-tenfoot) UI inside it (Rule
+# 1/9 — don't reinvent gamescope's own compositor logic or Steam's own
+# Big Picture UI, just wire them together).
+#
+# ntloader (ARCHITECTURE.md section 4, ntloader/) is NOT invoked
+# directly by this script — it doesn't need to be. It's registered via
+# binfmt_misc (usr/lib/binfmt.d/ntlinux-pe.conf) at the kernel level, so
+# any `.exe` a game or Steam launches inside this session already routes
+# through it transparently, the same way it would in any other session.
+# Gaming integration here means "this session doesn't get in that
+# path's way," not "route PE execution through a session script."
+set -euo pipefail
+
+# NTBRIDGE_SHM_DEFAULT_SIZE-style honesty: don't silently no-op if
+# gamescope isn't actually installed — this script only ever runs
+# inside the built NTLinux image (distro/packages/base.list lists
+# `gamescope`), never in this dev sandbox, so failing loudly here is
+# correct, not a bug to work around.
+if ! command -v gamescope >/dev/null 2>&1; then
+    echo "gamescope-session: gamescope not found on PATH — this script is" \
+         "meant to run inside a built NTLinux image (see" \
+         "distro/packages/base.list), not a bare dev environment" >&2
+    exit 1
+fi
+
+# -W/-H: let gamescope query the real output's native resolution itself
+# (omitting -w/-h) rather than hardcoding a size here — matches upstream
+# gamescope-session's own default behavior, avoids baking in an
+# assumption about the eventual hardware's display.
+# --backend auto: prefer DRM/KMS on real hardware, falls back to a
+# nested (X11/Wayland) backend under a desktop session for testing —
+# the same auto-detection gamescope's own CLI already provides (Rule 9:
+# don't reimplement backend selection gamescope already does).
+exec gamescope --backend auto -- steam -tenfoot -pipewire-dbus

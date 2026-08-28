@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ntlinux.example/schema/compat-entry.schema.json",
+  "title": "NTLinux compatibility database entry",
+  "description": "Phase 10's 'driver compatibility database' deliverable (ROADMAP.md Phase 10, ARCHITECTURE.md section 46): one entry per tracked application, game, or driver. tooling/compat-db/README.md names the fields this formalizes: version, Windows target, required overrides, known bugs, test status.",
+  "type": "object",
+  "required": ["id", "name", "kind", "windows_target", "test_status", "last_tested"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Stable slug, e.g. 'wine-notepad' or 'ntbridge-vsdev'."
+    },
+    "name": { "type": "string" },
+    "kind": {
+      "type": "string",
+      "enum": ["application", "game", "driver"],
+      "description": "'driver' entries are what ties this database to driver/ and tooling/compat-db/ddkgap/'s own findings (ARCHITECTURE.md section 46's driver-compatibility half)."
+    },
+    "version": {
+      "type": "string",
+      "description": "The tested version of the app/game/driver itself, not of NTLinux."
+    },
+    "windows_target": {
+      "type": "string",
+      "description": "The Windows version this was built/documented against, e.g. 'winxp', 'win7', 'win10' — not necessarily what it was tested under here.",
+      "examples": ["winxp", "win7", "win10"]
+    },
+    "required_overrides": {
+      "type": "array",
+      "description": "Wine DLL overrides (WINEDLLOVERRIDES-shaped) this entry needed, if any.",
+      "items": {
+        "type": "object",
+        "required": ["dll", "mode"],
+        "additionalProperties": false,
+        "properties": {
+          "dll": { "type": "string" },
+          "mode": { "type": "string", "enum": ["native", "builtin", "native,builtin", "builtin,native", "disabled"] }
+        }
+      }
+    },
+    "known_bugs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["summary"],
+        "additionalProperties": false,
+        "properties": {
+          "summary": { "type": "string" },
+          "workaround": { "type": "string" },
+          "tracking_url": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    "test_status": {
+      "type": "string",
+      "enum": ["untested", "builds", "loads", "boots", "playable", "verified", "perfect"],
+      "description": "Deliberately one shared enum across kinds rather than a per-kind one (Rule 2): 'builds'/'loads'/'verified' read naturally for a driver entry, 'boots'/'playable'/'perfect' for a game, and both kinds share 'untested' as the honest default — see this schema's README for why a split enum wasn't worth the duplication."
+    },
+    "compat_tool": {
+      "type": "string",
+      "description": "For 'game'/'application' entries only: which Steam Play compatibility tool (or ntloader) this was run through.",
+      "examples": ["ntloader", "ntlinux-runtime", "proton-experimental", "wine-staging (no compat tool)"]
+    },
+    "driver_refs": {
+      "type": "array",
+      "description": "Repo-relative paths into driver/ this entry depends on or exercises, for 'driver' kind entries (or a game/app entry that specifically exercises one, e.g. Phase 5's vsdev.c test).",
+      "items": { "type": "string" }
+    },
+    "notes": { "type": "string" },
+    "last_tested": {
+      "type": "string",
+      "format": "date",
+      "description": "ISO 8601 date of the most recent real test this entry reflects — never backfilled from memory, always the date an actual run happened."
+    }
+  }
+}

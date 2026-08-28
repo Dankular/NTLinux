@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=NTLinux Game Mode
+Comment=Gamescope-based console-style session (Big Picture Steam), NTLinux's default session per CLAUDE.md's open decisions
+Exec=gamescope-session
+Type=Application
+DesktopNames=gamescope

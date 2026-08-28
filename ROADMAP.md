@@ -961,11 +961,101 @@ attempt at the full underlying task in one pass.
 
 ---
 
-## Phase 10 — Gaming integration ⬜
+## Phase 10 — Gaming integration 🟨 (session + compat-tool integration artifacts written and validated at the syntax/schema level; no live Steam/GPU verification possible in this sandbox)
 
 Tight Steam/Proton/NTLinux runtime/Gamescope/DXVK/vkd3d-proton integration
 plus the driver compatibility database. Windows applications and games
 should feel like native Linux packages.
+
+**Scope, stated up front:** `distro/packages/base.list`/`packages.x86_64`
+already carry the upstream package selection (Steam, Wine, Gamescope,
+DXVK/vkd3d-proton via Steam's own Proton bundling — Phase 0). What this
+phase adds is the glue *between* them — a real default session, and a
+real (if scoped) Steam Play integration point — plus the "driver
+compatibility database" Phase 10 explicitly names as its second
+deliverable. Real game rendering/controller verification needs GPU and
+display hardware this sandbox architecturally doesn't have (no
+`/dev/dri`, no KVM) — same category as Phase 6/8's hardware absences,
+stated precisely rather than glossed over.
+
+### `distro/gaming/` — new
+
+- Default "Game Mode" session (CLAUDE.md's "Open decisions" — Gamescope
+  primary, Plasma optional desktop-mode): `distro/image/airootfs/usr/
+  share/wayland-sessions/gamescope-session.desktop` +
+  `.../usr/bin/gamescope-session`, matching the real, documented
+  SteamOS/HoloISO/ChimeraOS convention for this exact file/script pair
+  (Rule 1/9 — not invented here).
+- `compat-tool/` — a real Steam Play custom compatibility tool
+  ("NTLinux Runtime": `compatibilitytool.vdf`/`toolmanifest.vdf`/
+  `run.sh`) that runs a game through this project's own Wine build
+  instead of Valve's bundled Proton. **Deliberately not `ntloader`**,
+  for real reasons stated precisely in its README: a Steam compat tool
+  is invoked as `<script> %verb% <game.exe> <args>` (a different
+  contract than `ntloader`'s bare `./game.exe` `binfmt_misc`
+  invocation), and must use Steam's own per-game
+  `STEAM_COMPAT_DATA_PATH` prefix rather than `ntloader`'s
+  `~/.local/share/ntlinux/apps/` scheme, which Steam doesn't know
+  about. What it *does* provide: a genuine, working Steam Play entry
+  running games against NTLinux's own Wine version rather than
+  whatever Proton ships — useful today, honestly scoped rather than
+  overclaimed as deeper NT-runtime routing (that's real follow-up work
+  for a later `ntabi`/`ntd` generation).
+
+### `tooling/compat-db/schema/` — the "driver compatibility database"
+
+A real JSON Schema (`compat-entry.schema.json`) formalizing the fields
+`tooling/compat-db/README.md` already named (version, Windows target,
+required overrides, known bugs, test status), covering `application`/
+`game`/`driver` entries with one shared `test_status` enum (Rule 2 —
+not a separate enum per kind). Seeded with **two genuinely true
+entries** pulled from this project's own already-verified history, not
+fabricated for illustration: Phase 1's `ntloader`+Wine `notepad.exe`
+run, and Phase 5's `vsdev.c` driver test. The database proper (a real,
+growing collection covering actual apps/games/drivers) is still
+unstarted — this is the structural starting point, not a populated
+database.
+
+### Verified, at the level this sandbox allows
+
+```
+$ desktop-file-validate gamescope-session.desktop
+# one expected warning about DesktopNames - real, standard key for
+# session .desktop files that desktop-file-validate's spec (targeted at
+# application launchers) doesn't recognize; not a bug in this file.
+
+$ shellcheck gamescope-session run.sh   # both clean, zero warnings
+$ bash -n gamescope-session run.sh      # both syntax OK
+
+$ python3 compat-tool/validate-vdf.py compatibilitytool.vdf toolmanifest.vdf
+OK: compatibilitytool.vdf parses as well-formed VDF, top-level keys: ['compatibilitytools']
+OK: toolmanifest.vdf parses as well-formed VDF, top-level keys: ['manifest']
+
+$ python3 tooling/compat-db/schema/validate.py
+OK: seed-entries.json: wine-notepad-ntloader
+OK: seed-entries.json: ntbridge-vsdev
+# negative test confirms the validator actually rejects bad data:
+$ python3 validate.py /tmp/bad-entry.json
+FAIL: /tmp/bad-entry.json: Bad ID!: 'kind' is a required property
+```
+
+**What Phase 10 does not yet prove:** Steam actually discovering and
+offering the compat tool, a real game launching through either
+integration point, DXVK/vkd3d-proton actually rendering anything, or a
+controller being recognized — no Steam client, no GPU, no display
+server exists in this sandbox to test any of that against. Real
+follow-up on real hardware, not attempted here.
+
+### A real doc-sync bug found and fixed during this pass
+
+`distro/packages/base.list` gained `wireguard-tools` for Phase 15, but
+`distro/image/packages.x86_64` — which `base.list`'s own header says
+must stay in sync — was never updated to match. Found by actually
+diffing the two package lists (not assumed in sync), fixed. `driver/
+README.md` also still said "`net/`, `usb/` are still untouched" after
+both were completed in Phases 7-8 — fixed to reflect their real status,
+and to mention `vfio/` (Phase 6's directory, previously unmentioned
+entirely).
 
 ---
 
