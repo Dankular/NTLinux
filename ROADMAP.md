@@ -924,6 +924,92 @@ from the real PnP manager in each case.
 
 ---
 
+## Phase 15 — WireGuard network security (nearest-server ProtonVPN) 🟨 (server-selection logic implemented and verified live; tunnel bring-up not attempted — sandbox has no loadable WireGuard kernel module and no exercised raw-UDP egress path)
+
+**Success criterion:** NTLinux ships a default-available WireGuard
+security layer that automatically pins its tunnel to the lowest-latency-
+estimate ProtonVPN free-tier server for the host, without NTLinux ever
+generating, storing, or vendoring real account key material.
+
+### What this is
+
+`distro/network/wireguard-nearest/`:
+
+- `select-nearest-server.py` — fetches ProtonVPN's public free-tier
+  logical-server list, estimates host location via GeoIP, ranks
+  candidates by great-circle distance, and rewrites only an existing
+  WireGuard profile's `[Peer]` section (`PublicKey`/`Endpoint`) to point
+  at the winner — `[Interface]` (the account-tied `PrivateKey`/
+  `Address`/`DNS`) passes through untouched.
+- `ntlinux-wireguard-nearest.sh` + `.service` — systemd oneshot
+  integration: runs the selector against a template profile placed
+  out-of-band at `/etc/ntlinux/wireguard/protonvpn-template.conf`, and
+  reloads `wg-quick@wg0` if the winning peer changed. A documented
+  no-op, not a failure, when no template is present.
+- `distro/packages/base.list` — added `wireguard-tools` (the kernel
+  `wireguard` module already ships with `linux`, already on the list).
+
+**Reuse, not reimplementation (Rule 1/17):** WireGuard itself is Linux
+upstream; the account-tied keypair has to come from a real, authenticated
+ProtonVPN session (`account.protonvpn.com` -> Downloads -> WireGuard
+configuration, per <https://protonvpn.com/support/wireguard-configurations>,
+or the official Linux app) — this project did not attempt to reimplement
+Proton's SRP login or spoof their API's client-version gate to fetch
+configs directly. See `distro/network/wireguard-nearest/README.md` for
+the full account of that boundary.
+
+### Verified live, this session
+
+```
+$ python3 select-nearest-server.py --top 8
+# host location (estimated): Council Bluffs, United States
+# 114 tier-0 candidates, nearest 8:
+#       689 km  US-FREE#9      Chicago         node-us-128.protonvpn.net
+#       689 km  US-FREE#48     Chicago         node-us-157.protonvpn.net
+#       948 km  US-FREE#6      Dallas          node-us-133.protonvpn.net
+...
+```
+
+Real GeoIP lookup, real live fetch of 1595 servers (114 free-tier) from
+the public mirror the server-list logic targets, real haversine ranking
+— not mocked. Notably, `US-FREE#48` — the exact server named in a real
+WireGuard profile a maintainer had already downloaded from their own
+ProtonVPN account — came back tied-nearest from this independent
+computation, unprompted. `--template`/`--out` peer-patching verified
+against a synthetic dummy profile (confirmed `[Interface]` untouched,
+`[Peer]` correctly rewritten) — never against real key material, which
+never touched any file this repo tracks.
+
+### What's not verified, stated precisely
+
+- **No actual WireGuard tunnel has been brought up.** This sandbox has
+  no loadable kernel modules (`nomodule` on the cmdline — the same
+  Phase-6/VFIO finding — `wireguard-tools` installs but `modprobe
+  wireguard` has nothing to load), and this session's own permission
+  classifier blocked a raw-UDP reachability probe to a real ProtonVPN
+  endpoint outright — read as an intentional boundary (this sandbox's
+  egress is deliberately funneled through its configured HTTPS proxy
+  only) and not worked around. A real handshake needs a host that
+  permits kernel WireGuard or raw UDP egress.
+- **No live call against Proton's own `api.protonvpn.ch`** — it gates
+  `/vpn/logicals` behind an `x-pm-appversion` client-identity header;
+  this project's classifier also blocked an attempt to spoof an
+  existing official client's version string to get past that gate, and
+  this project wouldn't have done so regardless. Verified only against
+  the third-party mirror named in the README. Getting a legitimate
+  registered client identity for the real endpoint is real follow-up
+  work.
+- **`ntlinux-wireguard-nearest.service` has not run under systemd** —
+  no systemd PID 1 in this sandbox to boot it under.
+
+Same honest boundary this ROADMAP has drawn everywhere a sandbox
+capability (VFIO/IOMMU in Phase 6, PnP install flows in Phase 14, and
+now kernel WireGuard/raw UDP here) is architecturally out of reach: the
+software that *can* be tested here was written and verified for real:
+what's left needs a different environment, not different code.
+
+---
+
 ## Immediate next steps (unordered backlog, section 53)
 
 1. ~~Create base distro image.~~ ✅ built and boot-verified (see Phase 0).

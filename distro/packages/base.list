@@ -42,6 +42,9 @@ steam                   # 10, 38    — bundles Proton, DXVK, vkd3d-proton per-g
 gamemode                # 10        — CPU governor/priority tuning for games
 lib32-gamemode          # 10, 11    — 32-bit gamemode support library
 networkmanager          # (live-boot essential, not NT-specific)
+wireguard-tools         # 53.4 (Phase 15) — wg/wg-quick; the kernel WireGuard
+                        #             module ships with `linux` already, this
+                        #             is just the userspace CLI on top of it
 
 # --- Phase 1: native Windows executable UX (ntloader, tooling/installer/) ---
 python                  # 4         — runs tooling/installer/ntlinux-app

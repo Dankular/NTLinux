@@ -1,0 +1,19 @@
+[Unit]
+Description=NTLinux: pin WireGuard peer to nearest ProtonVPN free-tier server
+Documentation=https://github.com/Dankular/NTLinux/blob/main/distro/network/wireguard-nearest/README.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/ntlinux/wireguard/protonvpn-template.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/ntlinux/wireguard-nearest/ntlinux-wireguard-nearest.sh
+# The template profile holds real account key material; keep this unit's
+# own footprint minimal and let the script fail closed (set -e) rather
+# than half-apply a peer swap.
+ProtectSystem=strict
+ReadWritePaths=/etc/wireguard /etc/ntlinux/wireguard
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
