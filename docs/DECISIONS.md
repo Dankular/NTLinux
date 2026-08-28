@@ -240,6 +240,19 @@ prototype:
   `tests/reactos/README.md` all state the same boundary consistently,
   so no document overstates what Phase 4 actually proved.
 
+**Correction (Phase 5):** the "needs RosBE" claim above about
+`ntbridge_pnp.c` was wrong, caught while starting Phase 5's driver work.
+RosBE is only needed to build ReactOS *itself* from source; a driver
+that merely targets ReactOS's (Windows-compatible) kernel ABI needs only
+a DDK header set and `ntoskrnl.exe`/`hal.dll` import stubs — which
+mingw-w64 already ships. `ntbridge_pnp.c` now builds clean with that
+toolchain (see its README's own correction note); RosBE's real,
+narrower scope — building ReactOS's own kernel from source for the
+stripped ROS-NTCELL profile — is tracked as Phase 13. Left this original
+entry in place rather than editing it away, so the decision trail shows
+what was believed at the time and what was later found, not a silently
+rewritten record.
+
 ---
 
 ## ADR-0006 — Musa.Veil is a reference source for NT struct/prototype declarations, not a vendored dependency; hand-declare the small subset actually needed

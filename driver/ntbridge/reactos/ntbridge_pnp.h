@@ -29,7 +29,12 @@
 #include <ntddk.h>
 #include "ntbridge_protocol.h"
 
-#define NTBRIDGE_POOL_TAG 'grbN' /* "Nbrg" reversed, per NT tagging convention */
+/* "Nbrg" reversed, per NT tagging convention. Built from explicit byte
+ * shifts rather than the usual multichar literal ('grbN') so this
+ * compiles warning-clean under GCC/MinGW (-Wmultichar) as well as MSVC -
+ * same numeric value either way. */
+#define NTBRIDGE_POOL_TAG \
+    (((ULONG)'g') | ((ULONG)'r' << 8) | ((ULONG)'b' << 16) | ((ULONG)'N' << 24))
 #define NTBRIDGE_MAX_CHILD_PDOS 64
 
 /* One entry per synthetic device this FDO has created a child PDO for,

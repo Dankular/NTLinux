@@ -42,4 +42,13 @@ in this sandbox) — the `kvm` branch of `accel()` is straightforward
 unexercised. Does not yet read `driver/cell/config/*.conf` — see that
 directory's README.
 
+`qmp_console.py` is a second QMP helper alongside `qmp_screendump.py`,
+grown out of Phase 5's driver verification work
+(`driver/vsdev/run-test.sh`): where `qmp_screendump.py` only captures a
+frame, `qmp_console.py` also sends synthetic keyboard input (single
+qcodes or whole strings, with US-QWERTY shift handling) so a script can
+actually drive ReactOS's text-mode dialogs and a `cmd.exe` session
+end-to-end, not just observe them. Every primitive in it was exercised
+live, repeatedly, verifying `vsdev.sys` — not written speculatively.
+
 See [`docs/ARCHITECTURE.md`](/docs/ARCHITECTURE.md) for full architectural context and [`ROADMAP.md`](/ROADMAP.md) for phase sequencing. Before implementing anything here, check whether the capability already exists upstream (Wine / Proton / ReactOS / Linux / Mesa / DXVK / vkd3d-proton / Gamescope / PipeWire / VFIO-IOMMU-KVM) per Rule 1 in `CLAUDE.md`.

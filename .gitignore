@@ -21,6 +21,7 @@
 # tests/reactos/build-testguest-initramfs.sh.
 /driver/cell/images/*.iso
 /driver/cell/images/*.zip
+/driver/cell/images/*.7z
 /driver/ntbridge/host/ntbridge-host
 /tests/reactos/ntbridge-guest-test
 /tests/reactos/initramfs.cpio.gz
@@ -32,3 +33,14 @@
 # ntprobe: cross-compiled Windows binary and its output.
 /tooling/compat-db/ntprobe/ntprobe.exe
 /tooling/compat-db/ntprobe/*-results.json
+
+# ntbridge.sys and Phase 5 driver: cross-compiled Windows kernel binaries.
+/driver/ntbridge/reactos/*.o
+/driver/ntbridge/reactos/*.sys
+/driver/vsdev/*.o
+/driver/vsdev/*.sys
+/driver/vsdev/vsdev_test.exe
+
+# Phase 5: fetched ReactOS x64 nightly ISO - large, not vendored (consume,
+# don't vendor - ADR-0002/Rule 17), same as the release ISOs above.
+/driver/cell/images/reactos-livecd-*-x64-*.iso

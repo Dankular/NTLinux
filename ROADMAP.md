@@ -349,7 +349,7 @@ a test failure.
 
 ---
 
-## Phase 4 — ReactOS driver-cell prototype 🟨 (protocol/transport/launcher done and verified; real ReactOS driver written but unbuilt)
+## Phase 4 — ReactOS driver-cell prototype 🟨 (protocol/transport/launcher/driver all built and verified; not yet loaded inside a running ReactOS kernel)
 
 Deliver a minimal bootable ReactOS image, KVM launcher, `ntbridge`, logging
 channel, host heartbeat, device enumeration bridge.
@@ -386,23 +386,39 @@ ReactOS — stated precisely below, not glossed over.**
 - [x] Minimal bootable ReactOS image — `driver/cell/images/
       fetch-reactos-iso.sh` downloads the real upstream ReactOS 0.4.15
       release ISO (ADR-0002/Rule 17: consume, don't vendor ReactOS
-      source just to get a bootable image). **Known gap:** this is the
-      stock general-purpose ReactOS ISO (full desktop shell), not yet
-      the stripped driver-only ROS-NTCELL profile ARCHITECTURE.md
-      section 15 describes — that needs building ReactOS from source
-      with RosBE, unavailable here.
+      source just to get a bootable image). **Known gap, moved to Phase
+      13, not abandoned:** this is the stock general-purpose ReactOS ISO
+      (full desktop shell), not yet the stripped driver-only ROS-NTCELL
+      profile ARCHITECTURE.md section 15 describes — that needs building
+      ReactOS **itself** from source with RosBE. See Phase 13.
 - [x] ReactOS-side `ntbridge` driver (`driver/ntbridge/reactos/
       ntbridge_pnp.c`) — a real WDM bus driver written against actual
       ReactOS DDK conventions (`DriverEntry`/`AddDevice`, IRP_MJ_PNP
       dispatch, `MmMapIoSpace` over translated PnP resources,
       `IoCreateDevice`/`IoInvalidateDeviceRelations` for child PDOs).
-      **Not built or run** — needs the RosBE cross-toolchain this
-      sandbox doesn't have (same category of gap as Phase 12's Wine
-      `ntdll` integration). Two real bugs are flagged directly in its
-      own comments for whenever a real build becomes possible: a
-      missing wait-for-lower-IRP-completion in `IRP_MN_START_DEVICE`,
-      and `IoCreateDevice` called from DISPATCH_LEVEL inside the poll
-      DPC (needs a deferred work item instead).
+      **Correction to an earlier claim in this file:** this was
+      originally marked "needs RosBE, unbuilt" — that was wrong, caught
+      while starting Phase 5. RosBE is only needed to build ReactOS
+      *itself* from source; a driver that merely targets ReactOS's
+      (Windows-compatible) kernel ABI needs only a DDK header set and an
+      import library for `ntoskrnl.exe`/`hal.dll` — which mingw-w64
+      already ships (`/usr/x86_64-w64-mingw32/include/ddk/`,
+      `libntoskrnl.a`, `libhal.a`), the same toolchain
+      `tooling/compat-db/` already uses. **Now actually built**: compiles
+      clean (`-Wall -Wextra`, zero warnings after fixing one multichar
+      pool-tag literal) and links into a real PE32+ `native`-subsystem
+      `.sys` via that toolchain — see `driver/ntbridge/reactos/Makefile`.
+      Two real bugs remain, still flagged directly in its own comments,
+      now that a real build can actually surface them: a missing
+      wait-for-lower-IRP-completion in `IRP_MN_START_DEVICE`, and
+      `IoCreateDevice` called from DISPATCH_LEVEL inside the poll DPC
+      (needs a deferred work item instead) — building successfully
+      doesn't mean these are fixed, only that they're now real,
+      inspectable bugs in a real binary rather than hypothetical ones in
+      unbuilt source. **Still not loaded inside a running ReactOS
+      kernel** — that's a different, remaining gap (needs driving
+      ReactOS's actual boot/install process, not a toolchain gap) from
+      the "can't even compile" gap this correction resolves.
 - [x] Honest stand-in guest test (`tests/reactos/
       ntbridge-guest-test.c`) — since the real ReactOS driver above
       can't be built here, this implements the *guest side of the
@@ -430,21 +446,124 @@ protocol, its SPSC ring transport, the host daemon, and the QEMU
 launcher (including real `ivshmem-plain` PCI device attachment reachable
 from inside a genuinely separate guest kernel) are all real and
 verified end-to-end. A real, unmodified ReactOS kernel boots under the
-same launcher. What it does **not** yet prove: that the actual ReactOS-
-side driver (`ntbridge_pnp.c`) compiles or behaves correctly against a
-real ReactOS kernel — that requires RosBE, unavailable in this sandbox,
-and is the honest boundary of "prototype" here, exactly as Phase 2 drew
-the same line around real Wine `ntdll` integration.
+same launcher. The ReactOS-side driver (`ntbridge_pnp.c`) now compiles
+and links into a real `.sys` too. What it does **not** yet prove: that
+`ntbridge_pnp.c` *behaves correctly once actually loaded and running*
+inside a booted ReactOS kernel (its two flagged bugs are exactly the
+kind of thing that would surface there) — that needs driving ReactOS's
+real boot/install/driver-load process, which Phase 5 takes a first,
+simpler run at with a standalone test driver before this one.
 
 ---
 
-## Phase 5 — First Windows driver ⬜
+## Phase 5 — First Windows driver 🟨 (loads and performs real I/O, verified live; PnP-triggered load and ntbridge routing not yet attempted)
 
 Start with a simple virtual/low-risk device (virtual serial, virtual block,
 simple USB, virtual network adapter). Avoid GPU drivers initially.
 
 **Success criterion:** a real Windows `.sys` loads, receives PnP IRPs, and
 performs I/O through the host bridge.
+**Loads and performs real I/O — verified live, twice, on a fresh boot.
+PnP IRPs and host-bridge routing not yet attempted — stated precisely
+below.**
+
+### A real finding along the way: RosBE isn't needed for drivers at all
+
+Starting this phase meant first correcting Phase 4: `driver/ntbridge/
+reactos/ntbridge_pnp.c` was marked "unbuilt, needs RosBE." That was
+wrong. RosBE only builds ReactOS **itself** from source; a driver that
+merely targets ReactOS's (Windows-compatible) kernel ABI needs just a
+DDK header set and `ntoskrnl.exe`/`hal.dll` import stubs — which
+**mingw-w64 already ships** (`/usr/x86_64-w64-mingw32/include/ddk/`,
+`libntoskrnl.a`, `libhal.a`). Confirmed by actually compiling and
+linking both `ntbridge_pnp.c` and this phase's new driver into real
+`.sys` files with that toolchain — see Phase 4's corrected entry and
+`driver/ntbridge/reactos/README.md`. RosBE is real work this project
+still hasn't done, but it's scoped much narrower than previously
+stated — see Phase 13.
+
+### `driver/vsdev/` — the actual first driver
+
+- [x] `vsdev.c`/`.h`/`.inf` — a minimal virtual serial-style loopback
+      device: `IoCreateDevice` + `IoCreateSymbolicLink`
+      (`\\.\NTLVSER0`), `IRP_MJ_CREATE`/`CLOSE`/`READ`/`WRITE` with a
+      real fixed-buffer loopback (write stores, read returns-and-
+      consumes — genuine semantics, not a stub returning success), full
+      `IRP_MJ_PNP` dispatch (`IRP_MN_START_DEVICE` et al.) for a real
+      PnP/Root-enumerated install via `vsdev.inf`.
+- [x] Builds clean (`-Wall -Wextra`, zero warnings) and links into a
+      real PE32+ `native`-subsystem `.sys` — `driver/vsdev/Makefile`,
+      same mingw-w64 DDK toolchain as `ntbridge_pnp.c`.
+- [x] **A real bug found only by actually loading it, not by
+      inspection:** `sc start` against a plain `type= kernel` service
+      (no INF/Root-enumeration install) uses NT's *legacy* driver-load
+      path — it calls `DriverEntry` and nothing else. `AddDevice` only
+      fires from real PnP enumeration. `vsdev.c` originally created its
+      device object solely from `AddDevice`, so it loaded successfully
+      (`STATE: RUNNING`) but was completely invisible/unusable —
+      confirmed live before the fix (screenshot below, "system cannot
+      find the file specified"). Fixed with the standard legacy-driver
+      pattern: `DriverEntry` now also creates the device directly
+      (`VsdevCreateDeviceObject`, shared with `AddDevice`), and
+      `VsdevUnload` now cleans up a legacy-created device itself, since
+      it never receives `IRP_MN_REMOVE_DEVICE`.
+- [x] Architecture correction, also found live, not assumed: ReactOS
+      0.4.15's stable release is x86 (32-bit) only — no x64 variant
+      exists at that version (confirmed: neither SourceForge nor
+      reactos.org lists one). The 64-bit mingw-built driver failed to
+      load against it (`Error 193: %1 is not a valid Win32
+      application`) — a real architecture mismatch, not a bug in the
+      driver. Fixed by using a ReactOS **x64 nightly build**
+      (`reactos-livecd-0.4.17-dev-706-g5912119-x64-msvc-win-dbg`, from
+      `iso.reactos.org`) instead, matching the driver's actual
+      architecture rather than cross-compiling 32-bit to match a stable
+      release that doesn't have an x64 counterpart.
+- [x] `vsdev_test.c` — a small userspace client (`CreateFile`/
+      `WriteFile`/`ReadFile` against `\\.\NTLVSER0`, real `GetLastError`
+      reporting) used instead of `cmd.exe`'s `>`/`type` shell
+      redirection, which turned out to have its own quirks against a
+      raw device path in this environment.
+
+**Verified live**, on a clean ReactOS x64 boot, files delivered via a
+QEMU floppy image (`mtools`) since the LiveCD's RAM disk had 0 bytes
+free:
+
+```
+X:\...\Desktop>sc create vsdev type= kernel binPath= A:\VSDEV.SYS
+[SC] CreateService SUCCESS
+X:\...\Desktop>sc start vsdev
+SERVICE_NAME: vsdev
+        STATE              : 4  RUNNING
+```
+
+![vsdev service running inside real ReactOS](driver/vsdev/screenshots/service-running.png)
+
+```
+X:\...\Desktop>A:\VSDTEST.EXE
+CreateFile OK, handle=0000000000000390
+WriteFile OK, wrote 20 bytes
+ReadFile OK, read 20 bytes: "Hello NTLinux Phase5"
+Loopback round-trip: PASS
+```
+
+![real I/O round-trip through vsdev.sys: PASS](driver/vsdev/screenshots/io-roundtrip-pass.png)
+
+**What Phase 5 actually proves, stated precisely:** a real, hand-written
+NTLinux Windows driver compiles, links, loads, and performs genuine I/O
+inside a real, freshly-booted ReactOS kernel — reproduced from a clean
+boot after the legacy-load fix, not a one-off. What it does **not** yet
+prove: `IRP_MN_START_DEVICE` firing from real PnP enumeration (this was
+loaded via the legacy `sc start` path, which `vsdev.c` now also
+supports directly — the PnP/`AddDevice`/`vsdev.inf` path exists in the
+same file but hasn't been exercised live, same category of gap as
+`ntbridge_pnp.c`'s own unexercised PnP path), and "performs I/O through
+the host bridge" — `vsdev`'s loopback buffer is entirely local to the
+driver, not yet routed through `ntbridge`. Both are real next steps, not
+silently assumed done.
+
+See `driver/vsdev/README.md` for the full account, including the
+QMP-driven (screenshot + synthetic keyboard) automation method used to
+drive the ReactOS console for this verification.
 
 ---
 
@@ -564,6 +683,44 @@ cross-process tests measuring actual behavior, not stubs.
 
 ---
 
+## Phase 13 — RosBE & the ROS-NTCELL stripped driver-cell profile ⬜
+
+Moved out of Phase 4, where it originally sat as a "known gap," once
+Phase 5 established that RosBE's actual scope is much narrower than
+Phase 4 assumed: **driver** source (`ntbridge_pnp.c`, `vsdev.c`, and any
+future NTLinux-authored driver) builds fine against mingw-w64's DDK
+toolchain, no RosBE needed — that correction lives in Phase 4 and
+`driver/ntbridge/reactos/README.md`. What genuinely still needs RosBE is
+building **ReactOS itself** from source, which this project has never
+attempted:
+
+- [ ] Stand up the RosBE cross-toolchain (out of reach in every sandbox
+      this project has run in so far — a real, separate undertaking
+      comparable in kind to the full Wine source build Phase 2/12
+      already deferred for the same reason).
+- [ ] Build the stripped, driver-only **ROS-NTCELL** boot profile
+      `docs/ARCHITECTURE.md` section 15 describes (HAL/ntoskrnl/
+      registry/PnP/IoMgr/ObMgr/MM/driver-loader/bridge-transport only —
+      no Explorer/Winlogon/GDI shell), replacing the stock general-
+      purpose ReactOS release/nightly ISOs `driver/cell/images/
+      fetch-reactos-iso.sh` currently fetches (see that directory's
+      README's "known gap").
+- [ ] Once RosBE exists, revisit whether `driver/ntbridge/reactos/
+      ntbridge_pnp.c`'s two flagged bugs (missing wait-for-lower-IRP-
+      completion; `IoCreateDevice` from DISPATCH_LEVEL) are easier to
+      catch/fix building inside a full ReactOS source tree (e.g. against
+      its own driver-verifier tooling) than the standalone mingw-w64
+      build this project uses today — not required, but worth checking
+      once the option exists.
+
+**Success criterion:** a ReactOS driver cell boots from a ROS-NTCELL
+image built by this project's own RosBE toolchain, with no desktop shell
+present — the actual "minimal bootable ReactOS image" Phase 4's success
+criterion originally called for, not the stock ISO stand-in it settled
+for.
+
+---
+
 ## Immediate next steps (unordered backlog, section 53)
 
 1. ~~Create base distro image.~~ ✅ built and boot-verified (see Phase 0).
@@ -594,11 +751,19 @@ cross-process tests measuring actual behavior, not stubs.
 12. ~~Send synthetic PCI/USB device descriptions from Linux to
     ReactOS.~~ ✅ against the honest stand-in guest, not real ReactOS
     yet — see Phase 4's precise accounting.
-13. Confirm ReactOS PnP creates device nodes — **not done**: this needs
-    the real ReactOS-side driver (`driver/ntbridge/reactos/
-    ntbridge_pnp.c`) actually built and running inside ReactOS, which
-    needs RosBE (see Phase 4's "known gap"). The stand-in guest
-    acknowledges devices; it has no NT PnP manager to create nodes in.
-14. Load a simple test `.sys`.
-15. Deliver `IRP_MN_START_DEVICE`.
-16. Bridge test I/O back to Linux.
+13. Confirm ReactOS PnP creates device nodes — **still not done**, but
+    the reason changed: `ntbridge_pnp.c` builds fine without RosBE (see
+    Phase 4's correction and Phase 13) — what's missing is actually
+    driving a PnP-enumerated install and observing a real device node
+    created, which Phase 5's `vsdev.c` also hasn't exercised yet (it
+    loaded via the legacy `sc start` path, not real PnP enumeration).
+14. ~~Load a simple test `.sys`.~~ ✅ `driver/vsdev/vsdev.sys` — real,
+    hand-written, loaded live inside a real ReactOS x64 kernel (see
+    Phase 5).
+15. Deliver `IRP_MN_START_DEVICE` — **not done**: `vsdev.c` implements
+    the handler, but the legacy load path Phase 5 actually verified
+    doesn't send it (only real PnP enumeration does) — see item 13.
+16. Bridge test I/O back to Linux — **not done**: Phase 5 proved real
+    I/O works (`vsdev`'s own loopback buffer), but it doesn't yet route
+    through `ntbridge` to reach Linux — see Phase 5's precise
+    accounting.

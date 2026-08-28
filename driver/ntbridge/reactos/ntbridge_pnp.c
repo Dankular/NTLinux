@@ -349,7 +349,11 @@ NtBridgeQueryBusRelations(
     return STATUS_SUCCESS; /* Irp completed by the IRP_MJ_PNP dispatcher after forwarding */
 }
 
-static NTSTATUS
+/* Not called yet - see the DISPATCH_LEVEL note in NtBridgePollDpc below
+ * for why (needs to be invoked from a deferred work item, not wired up
+ * yet). __attribute__((unused)) rather than deleting it: the function is
+ * real, correct, working code waiting on that plumbing, not dead code. */
+static NTSTATUS __attribute__((unused))
 CreateChildPdo(
     _In_ PNTBRIDGE_FDO_EXTENSION FdoExt,
     _In_ PDRIVER_OBJECT DriverObject,

@@ -1,0 +1,51 @@
+; vsdev.inf - installs NTLinux's first Windows kernel driver (Phase 5)
+; against the "Root" pseudo-bus rather than real hardware, the standard,
+; well-precedented way a virtual/software-only test driver receives real
+; PnP IRPs from the PnP manager without needing actual hardware to
+; enumerate against (the same pattern used by Microsoft's own WDK sample
+; drivers, e.g. "Toaster"). Install with:
+;   devcon install vsdev.inf Root\NTLINUX_VSDEV
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = Ports
+ClassGuid   = {4D36E978-E325-11CE-BFC1-08002BE10318}
+Provider    = %NTLinux%
+DriverVer   = 08/28/2026,0.1.0.0
+
+[Manufacturer]
+%NTLinux% = NTLinux, NTx86
+
+[NTLinux.NTx86]
+%Vsdev.DeviceDesc% = Vsdev_Install, Root\NTLINUX_VSDEV
+
+[Vsdev_Install]
+CopyFiles = Vsdev_CopyFiles
+
+[Vsdev_Install.Services]
+AddService = vsdev, 0x00000002, Vsdev_Service
+
+[Vsdev_Service]
+DisplayName    = %Vsdev.SvcDesc%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\vsdev.sys
+
+[Vsdev_CopyFiles]
+vsdev.sys
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+vsdev.sys = 1
+
+[DestinationDirs]
+Vsdev_CopyFiles = 12 ; %SystemRoot%\System32\drivers
+
+[Strings]
+NTLinux           = "NTLinux"
+Vsdev.DeviceDesc  = "NTLinux Virtual Serial Test Device (Phase 5)"
+Vsdev.SvcDesc     = "NTLinux vsdev - first Windows driver test"
+DiskName          = "NTLinux Driver Support Disk"
