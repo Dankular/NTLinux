@@ -1020,14 +1020,38 @@ ARCHITECTURE.md's stated "NT 5.2/Server 2003-ish" ReactOS baseline than
 assumed going in. Three real, narrow, distinct gaps came out of this,
 not one vague "needs modernizing":
 
-1. **NDIS 6.x has real ABI but no header declarations** — the same
-   reason `driver/net/reactos/ntnet.c` specifically targeted the older
-   NDIS 5.1 surface (see that file's own header comment) is now a
-   documented, generalizable finding, not an isolated one-off. The
-   narrowest gap here — hand-declaring the missing prototypes (same
-   technique `ntprobe/` already used for a few NT structures, ADR-0006)
-   would unlock NDIS 6.x miniports against this exact toolchain with no
-   new import library needed. Real, scoped follow-up work.
+1. **NDIS 6.x had real ABI but no header declarations - corrected, not
+   left at "hand-declaring would unlock this," by actually doing it.**
+   This entry originally proposed hand-declaring the missing prototypes
+   as the fix. Checked in CLAUDE.md Rule 1's priority order first
+   instead: the real Microsoft WDK/SDK NuGet packages (the same ones
+   `driver/gpu/fetch-wdk-headers.sh`/`driver/kmdf/fetch-kmdf-headers.sh`
+   already fetch from) turn out to carry a complete, current
+   `km/ndis.h` (~529KB) and its full NDIS 6.x support-header
+   directories - no hand-declaring needed at all.
+   `driver/net/reactos/ndis6-probe/fetch-ndis6-headers.sh` fetches
+   them; `driver/net/reactos/ndis6-probe/ndis6-probe.c` - a real NDIS
+   6.x connectionless-miniport `DriverEntry` referencing the real
+   `NDIS_MINIPORT_DRIVER_CHARACTERISTICS`/`NdisMRegisterMiniportDriver`/
+   `NdisMSetMiniportAttributes`/`NdisAllocateNetBufferListPool`/
+   `NdisMIndicateReceiveNetBufferLists` contract - **compiles clean and,
+   going one step further than the KMDF/WDDM probes below (neither has
+   an import library to link against), links clean** into a real
+   `ndis6-probe.sys` against this toolchain's actual `libndis.a`,
+   verified live and reproducibly (`make clean && make link`, twice,
+   same result: exit 0, 0 errors, all four target symbols resolved as
+   real imported thunks per `nm`). A double handful of real, narrow
+   patches found by actually compiling, not guessed at: several
+   genuinely-outdated/missing mingw-w64 headers shadowed by their real,
+   current WDK/SDK counterparts (`sal.h`/`specstrings*.h` for the
+   modern SAL 2.0 annotation macros `driverspecs.h` needs,
+   `ws2def.h`/`ws2ipdef.h` for `SOCKADDR_INET`, `ifdef.h` for
+   `NET_IF_OBJECT_ID` and friends), one case-sensitivity `#include`
+   mismatch (same class of bug `driver/kmdf/` already found), and
+   three narrow local declarations in the probe itself for symbols the
+   real `km/wdm.h`/`km/miniport.h` define but this probe deliberately
+   doesn't fetch/swap in wholesale. See
+   `driver/net/reactos/ndis6-probe/README.md` for the full account.
 2. **KMDF is absent from mingw-w64's packaging, but the real headers
    fetch and now compile clean — corrected twice, not left at "found,
    not solved."** This entry originally said KMDF headers were

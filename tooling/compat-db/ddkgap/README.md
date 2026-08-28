@@ -81,11 +81,8 @@ Security:
 Interrupts:                             both checked — full
 Filter Manager (minifilters):
   FltRegisterFilter                     absent
-NDIS 6.x (connectionless miniport model):
-  NdisMRegisterMiniportDriver           abi-only (header gap)
-  NdisMSetMiniportAttributes            abi-only (header gap)
-  NdisMIndicateReceiveNetBufferLists    abi-only (header gap)
-  NdisAllocateNetBufferListPool         abi-only (header gap)
+NDIS 6.x (connectionless miniport model): all abi-only (header gap)
+  as reported by this probe - but see the correction below
 
 KMDF: not pre-packaged by mingw-w64 - but see the correction below
 WDDM/DXGKRNL: not pre-packaged by mingw-w64 - but see the correction below
@@ -110,6 +107,18 @@ that fails under GCC/mingw-w64) documented there, not hidden. KMDF's
 real headers were found the same way but not yet compile-verified. See
 `driver/gpu/README.md` and `ROADMAP.md` Phase 11 for the full account.
 
+A third correction, made the same way, closes this file's own NDIS 6.x
+finding above: `driver/net/reactos/ndis6-probe/fetch-ndis6-headers.sh`
+fetches the same real WDK/SDK packages' full NDIS 6.x header set
+(`km/ndis.h` and its support headers), and
+`driver/net/reactos/ndis6-probe/ndis6-probe.c` — a real NDIS 6.x
+connectionless-miniport `DriverEntry` referencing all four symbols
+this probe flags — **compiles and links clean** against this
+toolchain's real `libndis.a`, going one step further than the
+KMDF/WDDM probes (neither has an import library to link against at
+all). See `driver/net/reactos/ndis6-probe/README.md` for the full,
+live-verified account.
+
 ## What this actually says about Phase 9's scope
 
 Genuinely more complete than assumed going in: the WDM-level PnP,
@@ -124,11 +133,17 @@ running noticeably ahead of that in several of these areas.
 
 Three real, narrow, distinct gaps, not one vague "needs modernizing":
 
-1. **NDIS 6.x has ABI but no headers.** The narrowest, most concretely
-   fixable gap — hand-declaring the missing prototypes (same technique
-   `tooling/compat-db/ntprobe/` already used for a few NT structures,
-   citing Musa.Veil, ADR-0006) would unlock building an NDIS 6.x
-   miniport against this exact toolchain, no new import library needed.
+1. **NDIS 6.x had ABI but no headers - closed, not left at "would
+   unlock this."** The real Microsoft WDK/SDK packages (checked first,
+   per CLAUDE.md Rule 1's own priority order) turned out to carry a
+   complete, current NDIS 6.x header set - no hand-declaring, and no
+   Musa.Veil/ADR-0006 fallback, needed at all.
+   `driver/net/reactos/ndis6-probe/` fetches them and **verifies live
+   that a real NDIS 6.x miniport `DriverEntry` compiles *and links*
+   clean** against this project's existing mingw-w64 toolchain and its
+   real `libndis.a` - the strongest of the three DDK-gap results in
+   this file, since (unlike KMDF/WDDM) no new import library was ever
+   needed. See `driver/net/reactos/ndis6-probe/README.md`.
 2. **KMDF is absent from mingw-w64's own packaging — but the real
    headers are real and fetchable**, found live in the same official
    Microsoft WDK NuGet package Phase 11's WDDM work already fetches
@@ -142,11 +157,12 @@ Three real, narrow, distinct gaps, not one vague "needs modernizing":
    this project's near-term target per CLAUDE.md's stated scope.
 
 This is the concrete, scoped starting point for Phase 9's upstream work
-— finding #1 is realistically attemptable now; #2 is a real, separate,
-larger undertaking (comparable in kind to the RosBE/Wine-source-build
-items Phases 2/12/13 already deferred for the same "needs a much bigger
-toolchain component this sandbox can't provide" reason); #3 is
-out-of-scope by design, not by gap.
+— finding #1 is done, not just attemptable (`driver/net/reactos/
+ndis6-probe/`, above); #2 is a real, separate, larger undertaking
+(comparable in kind to the RosBE/Wine-source-build items Phases
+2/12/13 already deferred for the same "needs a much bigger toolchain
+component this sandbox can't provide" reason); #3 is out-of-scope by
+design, not by gap.
 
 ## Known limitations, stated precisely
 
