@@ -567,7 +567,7 @@ drive the ReactOS console for this verification.
 
 ---
 
-## Phase 6 — VFIO hardware passthrough ⬜
+## Phase 6 — VFIO hardware passthrough ⬜ (explicitly deferred — see below, not silently skipped)
 
 Add PCI BAR mapping, MSI/MSI-X delivery, DMA mappings, device reset, IOMMU
 protection, resource descriptors.
@@ -575,12 +575,145 @@ protection, resource descriptors.
 **Success criterion:** a selected real Windows PCI driver operates physical
 hardware while Linux stays stable if the cell crashes.
 
+**Why this phase is out of order in this ROADMAP** (Phase 7 done before
+it): checked this sandbox directly before starting, rather than
+assuming — `/dev/vfio` doesn't exist, `/sys/kernel/iommu_groups` is
+empty, no `vmx`/`svm` CPU flags are exposed (confirms the earlier
+no-`/dev/kvm` finding from Phase 4), and the kernel cmdline carries
+`nomodule` (module loading disabled outright). This sandbox is a
+Firecracker microVM, which has no PCI bus or virtual IOMMU at all by
+design (virtio/MMIO only) — not a missing tool or a config gap, an
+architectural absence. Every prior phase's "gap" had a genuine
+software-only substitute (Wine's ntdll standing in for real Windows, a
+ReactOS nightly build for a missing variant, mingw+DDK instead of
+RosBE); this phase's success criterion is literally "operates *physical
+hardware*" — there is no honest substitute for physical hardware behind
+an IOMMU. Rather than write untestable host-side VFIO code with no path
+to verification in any sandbox shaped like this one, this phase stays
+an explicit, documented blocker, and Phase 7 (NDIS bridge) — whose
+success criterion doesn't require physical hardware at all, a virtual
+NIC bridged to a Linux TAP device satisfies it honestly — was tackled
+next instead. Revisit this phase on real hardware, or an environment
+that exposes IOMMU/VFIO to nested virtualization.
+
 ---
 
-## Phase 7 — NDIS bridge ⬜
+## Phase 7 — NDIS bridge 🟨 (protocol/transport/host-TAP-bridge verified end-to-end; real NDIS miniport written and linked, not yet loaded inside a running ReactOS kernel)
 
 **Success criterion:** a Windows NIC driver exposes a working Linux network
 interface.
+**Met against a stand-in for the ReactOS side (same pattern Phase 4
+established), with a real Linux TAP device on the other end — stated
+precisely below, not glossed over.**
+
+### `driver/net/reactos/ntnet.c` — a real NDIS 5.1 miniport
+
+- [x] Full legacy-characteristics Ethernet miniport: `DriverEntry` →
+      `NdisMRegisterMiniport` with `NDIS51_MINIPORT_CHARACTERISTICS`,
+      `NtnetInitialize` (maps the same ivshmem BAR2 region
+      `ntbridge_pnp.c`/`vsdev.c` do, via `NdisMQueryAdapterResources` +
+      `NdisMMapIoSpace`, Rule 12 magic/version check), `NtnetSend`
+      (copies an outgoing packet into `net_tx_ring`), a polling timer
+      (`NtnetPollTimer`, 20ms — same "no interrupt on ivshmem-plain, so
+      poll" pattern as `ntbridge_pnp.c`) that drains `net_rx_ring` and
+      hands frames up via the classic `NdisMEthIndicateReceive` path,
+      plus the full mandatory generic + 802.3 OID surface
+      (`OID_GEN_SUPPORTED_LIST` through the statistics counters) with
+      real values, not placeholders — traffic counters are live counts
+      updated by `NtnetSend`/`NtnetPollTimer`.
+- [x] **Three real upstream header bugs found and fixed, not guessed at
+      or worked around with more macros** — building an NDIS 5.1
+      miniport against mingw-w64's bundled DDK (ReactOS's own
+      `ndis.h`/`wdm.h`, repackaged) surfaced genuine bugs, confirmed
+      present regardless of which `NDIS*_MINIPORT` version macro was
+      selected:
+      1. `ndis.h` re-`typedef`s `enum _NDIS_REQUEST_TYPE` in its own
+         body despite already `#include`-ing `ntddndis.h`, which
+         defines the byte-for-byte identical enum — a genuine
+         duplicate-typedef compile error.
+      2. `ndis.h`'s `NdisMWanIndicateReceiveComplete()` prototype is
+         missing a comma between its two parameters — a literal typo.
+      3. `wdm.h` references `SYSTEM_POWER_STATE_CONTEXT` under a guard
+         spelled `NTDDI_VERSION >= NTDDI_WINVISTA`, but the struct is
+         only *defined* under the correctly-spelled `NTDDI_VISTA` —
+         `NTDDI_WINVISTA` doesn't exist anywhere in mingw-w64's
+         `sdkddkver.h`, so the preprocessor silently treats it as `0`
+         and the guard is always true, referencing an undefined type
+         below Vista-level targets (exactly this driver's NDIS
+         5.1/WinXP-level target, matching ReactOS's own reported NT 5.2
+         compatibility).
+      `driver/net/reactos/prepare-ndis-header.sh` generates locally-
+      patched copies of both headers into `./build/` — the system
+      install is never touched; each patch is a narrow, exact,
+      documented substitution, not a broad rewrite.
+- [x] Builds clean (`-Wall -Wextra`, two harmless pre-existing macro-
+      redefinition warnings) and links into a real PE32+
+      `native`-subsystem `.sys` via `-lndis -lntoskrnl -lhal`.
+      `ntnet.inf` installs it against the ivshmem PCI hardware ID under
+      the `Net` device class.
+
+### Protocol extension and host bridge
+
+- [x] `ntbridge_protocol.h` bumped to **v2** (Rule 12 — a real
+      wire-format change): `net_tx_ring`/`net_rx_ring`, each slot a
+      whole raw Ethernet frame (`ntbridge_net_frame_t`,
+      `NTBRIDGE_NET_FRAME_MAX` = 1514 bytes) — simplicity over
+      throughput for a first cut, matching the existing rings' "whole
+      record per slot" design. Backing shm size bumped 1 MiB → 4 MiB to
+      fit both rings with real headroom.
+- [x] `ntbridge-host`'s new `--tap IFNAME` mode: opens/creates a real
+      Linux TAP device (`/dev/net/tun`, `IFF_TAP|IFF_NO_PI`) and bridges
+      it to the two rings — guest-sent frames get written straight to
+      the TAP fd; frames Linux sends out that interface get read off
+      the fd and pushed into `net_rx_ring`. No protocol translation
+      either way — raw Ethernet frames, matching ARCHITECTURE.md
+      section 22's design ("NTLinux does not need to route ordinary
+      host networking through the Windows TCP/IP stack"). Polls at a
+      tighter 10ms tick than the other rings while `--tap` is active.
+
+### Verified live, end to end, both directions
+
+`tests/reactos/ntbridge-guest-test.c` (the same honest stand-in Phase 4
+established for `ntbridge_pnp.c`) now also pushes a tagged synthetic
+frame into `net_tx_ring` and watches `net_rx_ring` for a distinctly-
+tagged reply. `driver/net/reactos/run-test.sh` orchestrates the full
+test: `ntbridge-host --tap`, `tests/reactos/net-tap-echo.py` (a plain
+`AF_PACKET` raw-socket listener on that TAP interface — genuinely what
+any ordinary Linux network application would see there, not a special
+test hook), and the guest test client under `ntcell boot-testguest`.
+Most recent run:
+
+```
+[ntbridge-guest-test] net: pushed test frame to net_tx_ring
+[ntbridge-guest-test] net: received expected test frame on net_rx_ring - PASS
+net-tap-echo.py: captured guest frame (39 bytes) - contains b'NTLXNETTEST-GUEST-TO-HOST': PASS
+net-tap-echo.py: host->guest frame sent
+ntbridge-host: summary — guest heartbeat: yes, log lines received: 3, devices acked: 0/0,
+  TAP frames host->guest: 1, guest->host: 1
+guest->host (captured on real Linux TAP interface via raw socket): PASS
+host->guest (guest confirmed receipt via net_rx_ring, seen in ntbridge-host's log): PASS
+PASS: NDIS bridge network round-trip verified both directions over a real QEMU VM boundary
+  and a real Linux TAP device.
+```
+
+**A real bug found only by running this, not by inspection:** bumping
+the shm region to 4 MiB (for the new rings) broke the guest test
+client's `mmap()` of the ivshmem BAR2 with `EINVAL` — `driver/cell/
+launcher/ntcell`'s QEMU invocation had a hardcoded `SHM_SIZE_MB=1` that
+needed updating to match the new `NTBRIDGE_SHM_DEFAULT_SIZE`; fixed,
+with a comment flagging the cross-language duplication (a bash script
+can't `#include` the C header) for whoever changes the size next.
+
+**What Phase 7 actually proves, stated precisely:** the ntbridge
+network transport — wire format, ring protocol, and the host-side TAP
+bridge — is real and correct, verified over a genuine QEMU VM boundary
+and a real Linux netdev, not same-process and not mocked. What it does
+**not** yet prove: that `ntnet.c`, running as an actual NDIS miniport
+inside a real, booted ReactOS kernel, behaves correctly — NDIS adapter
+installation (Add Hardware wizard / Device Manager "Update Driver") is
+a materially larger live-verification task than `driver/vsdev/`'s
+single `sc start`, out of reach for this pass's budget. Same honest
+boundary Phase 4 drew around `ntbridge_pnp.c`.
 
 ---
 

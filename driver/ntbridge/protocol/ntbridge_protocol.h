@@ -48,8 +48,14 @@ extern "C" {
 /* Bump on any wire-incompatible change to the structs below (Rule 12).
  * No 'u'/'U' suffix — see the ntabi v2u incident in ROADMAP.md Phase 3;
  * preprocessor stringification (#x) includes literal type suffixes
- * verbatim, which would corrupt anything that stringifies this macro. */
-#define NTBRIDGE_PROTOCOL_VERSION 1
+ * verbatim, which would corrupt anything that stringifies this macro.
+ *
+ * v2 (Phase 7): added net_tx_ring/net_rx_ring for the NDIS bridge
+ * (ARCHITECTURE.md section 22) — a real wire-format change, hence the
+ * bump; a v1 guest mapping a v2 region (or vice versa) is refused by
+ * the magic+version check every side of this protocol already makes,
+ * exactly as designed. */
+#define NTBRIDGE_PROTOCOL_VERSION 2
 
 #define NTBRIDGE_MAGIC 0x5242544Eu /* "NTBR" little-endian */
 
@@ -144,6 +150,24 @@ typedef struct ntbridge_pnp_ack {
     uint32_t status;    /* 0 = accepted, nonzero = guest-side error code */
 } ntbridge_pnp_ack_t;
 
+/* NDIS bridge (Phase 7, ARCHITECTURE.md section 22): raw Ethernet
+ * frames, one ring per direction — net_tx_ring carries frames the guest
+ * NDIS miniport (driver/net/reactos/) wants sent out (guest -> host,
+ * where the host injects them into a Linux TAP device), net_rx_ring
+ * carries frames the host read off that same TAP device and wants
+ * delivered as "received" to the miniport (host -> guest). Deliberately
+ * whole raw frames, not descriptors pointing at frame data elsewhere —
+ * simplicity over throughput for a first cut, matching how the PnP/log
+ * rings already work; a zero-copy descriptor-ring redesign is a real,
+ * separate optimization if this ever needs more than test-scale
+ * throughput. */
+#define NTBRIDGE_NET_FRAME_MAX 1514u /* standard Ethernet MTU + 14-byte header, no jumbo frames */
+
+typedef struct ntbridge_net_frame {
+    uint32_t length; /* actual frame length in data[], <= NTBRIDGE_NET_FRAME_MAX */
+    uint8_t data[NTBRIDGE_NET_FRAME_MAX];
+} ntbridge_net_frame_t;
+
 #define NTBRIDGE_RING_DECL(name, elem_type)                                  \
     typedef struct name {                                                    \
         volatile uint64_t head; /* next slot the producer will write */      \
@@ -154,6 +178,7 @@ typedef struct ntbridge_pnp_ack {
 NTBRIDGE_RING_DECL(ntbridge_log_ring, ntbridge_log_entry_t);
 NTBRIDGE_RING_DECL(ntbridge_pnp_ring, ntbridge_pnp_descriptor_t);
 NTBRIDGE_RING_DECL(ntbridge_pnp_ack_ring, ntbridge_pnp_ack_t);
+NTBRIDGE_RING_DECL(ntbridge_net_ring, ntbridge_net_frame_t);
 
 /* ---- shared header -------------------------------------------------
  *
@@ -183,6 +208,8 @@ typedef struct ntbridge_shm_header {
     ntbridge_log_ring_t log_ring;           /* guest -> host: driver-cell log lines */
     ntbridge_pnp_ring_t pnp_ring;           /* host -> guest: synthetic device facts */
     ntbridge_pnp_ack_ring_t pnp_ack_ring;   /* guest -> host: per-device acknowledgment */
+    ntbridge_net_ring_t net_tx_ring;        /* guest -> host: frames the NDIS miniport is sending */
+    ntbridge_net_ring_t net_rx_ring;        /* host -> guest: frames read off the host TAP device */
 } ntbridge_shm_header_t;
 
 /* ---- ring push/pop helpers ------------------------------------------
@@ -227,14 +254,18 @@ typedef struct ntbridge_shm_header {
 NTBRIDGE_RING_PUSH_DECL(ntbridge_log_ring, ntbridge_log_entry_t)
 NTBRIDGE_RING_PUSH_DECL(ntbridge_pnp_ring, ntbridge_pnp_descriptor_t)
 NTBRIDGE_RING_PUSH_DECL(ntbridge_pnp_ack_ring, ntbridge_pnp_ack_t)
+NTBRIDGE_RING_PUSH_DECL(ntbridge_net_ring, ntbridge_net_frame_t)
 
 #define NTBRIDGE_SHM_SIZE_MIN ((uint32_t)sizeof(ntbridge_shm_header_t))
 
 /* Default ivshmem-plain backing size, rounded up to a page-aligned
  * power-of-two the way QEMU's memory-backend-file expects; comfortably
  * larger than NTBRIDGE_SHM_SIZE_MIN so the layout has headroom to grow
- * without an immediate resize. */
-#define NTBRIDGE_SHM_DEFAULT_SIZE (1u << 20) /* 1 MiB */
+ * without an immediate resize. Bumped from 1 MiB to 4 MiB in Phase 7 to
+ * fit the two new net_tx_ring/net_rx_ring rings
+ * (2 * 64 * ~1518 bytes =~ 194 KiB alone) with real headroom left over,
+ * not just barely fitting today's struct size. */
+#define NTBRIDGE_SHM_DEFAULT_SIZE (4u << 20) /* 4 MiB */
 
 #ifdef __cplusplus
 }

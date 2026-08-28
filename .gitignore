@@ -34,12 +34,15 @@
 /tooling/compat-db/ntprobe/ntprobe.exe
 /tooling/compat-db/ntprobe/*-results.json
 
-# ntbridge.sys and Phase 5 driver: cross-compiled Windows kernel binaries.
+# ntbridge.sys and Phase 5/7 drivers: cross-compiled Windows kernel binaries.
 /driver/ntbridge/reactos/*.o
 /driver/ntbridge/reactos/*.sys
 /driver/vsdev/*.o
 /driver/vsdev/*.sys
 /driver/vsdev/vsdev_test.exe
+/driver/net/reactos/*.o
+/driver/net/reactos/*.sys
+/driver/net/reactos/build/
 
 # Phase 5: fetched ReactOS x64 nightly ISO - large, not vendored (consume,
 # don't vendor - ADR-0002/Rule 17), same as the release ISOs above.

@@ -199,9 +199,56 @@ int main(int argc, char **argv)
     int64_t deadline = start + (int64_t)duration_s * 1000000000LL;
     int devices_seen = 0;
 
+    /*
+     * Phase 7 (NDIS bridge) network round-trip: push one synthetic
+     * Ethernet frame into net_tx_ring (standing in for what a real NDIS
+     * miniport's SendHandler would do — see driver/net/reactos/
+     * ntnet.c) and watch net_rx_ring for a distinctly-tagged inbound
+     * frame the host side injects after seeing this one arrive on its
+     * TAP device (see tests/reactos/net-tap-echo.py). Distinct magic
+     * strings in each direction make this a real content check, not
+     * just "some frame arrived".
+     */
+    const char *tx_magic = "NTLXNETTEST-GUEST-TO-HOST";
+    const char *rx_magic = "NTLXNETTEST-HOST-TO-GUEST";
+    int net_tx_sent = 0;
+    int net_rx_confirmed = 0;
+
+    {
+        ntbridge_net_frame_t frame;
+        memset(&frame, 0, sizeof(frame));
+        memset(frame.data, 0xFF, 6);       /* dst MAC: broadcast, simplest to sniff */
+        memset(frame.data + 6, 0x02, 6);   /* src MAC: locally-administered synthetic */
+        frame.data[12] = 0x88; frame.data[13] = 0xB5; /* EtherType: IEEE 802 "local experimental" */
+        size_t magic_len = strlen(tx_magic);
+        memcpy(frame.data + 14, tx_magic, magic_len);
+        frame.length = 14 + (uint32_t)magic_len;
+
+        if (ntbridge_net_ring_try_push(&shm->net_tx_ring, &frame)) {
+            net_tx_sent = 1;
+            log_both(shm, NTBRIDGE_LOG_INFO, "net: pushed test frame to net_tx_ring");
+        } else {
+            log_console("ntbridge-guest-test: WARNING: net_tx_ring full, could not send test frame");
+        }
+    }
+
     while (now_ns() < deadline) {
         shm->guest_heartbeat_seq++;
         shm->guest_heartbeat_time_ns = now_ns();
+
+        if (!net_rx_confirmed) {
+            ntbridge_net_frame_t frame;
+            while (ntbridge_net_ring_try_pop(&shm->net_rx_ring, &frame)) {
+                size_t magic_len = strlen(rx_magic);
+                if (frame.length >= 14 + magic_len &&
+                    memcmp(frame.data + 14, rx_magic, magic_len) == 0) {
+                    net_rx_confirmed = 1;
+                    log_both(shm, NTBRIDGE_LOG_INFO, "net: received expected test frame on net_rx_ring - PASS");
+                } else {
+                    log_both(shm, NTBRIDGE_LOG_WARN, "net: received an unexpected frame on net_rx_ring");
+                }
+            }
+        }
 
         ntbridge_pnp_descriptor_t dev;
         while (ntbridge_pnp_ring_try_pop(&shm->pnp_ring, &dev)) {
@@ -232,11 +279,23 @@ int main(int argc, char **argv)
     }
 
     char summary[256];
-    snprintf(summary, sizeof(summary), "guest shutting down: saw %d device(s), heartbeat seq=%llu",
-             devices_seen, (unsigned long long)shm->guest_heartbeat_seq);
+    snprintf(summary, sizeof(summary),
+             "guest shutting down: saw %d device(s), heartbeat seq=%llu, "
+             "net: sent=%s recv_confirmed=%s",
+             devices_seen, (unsigned long long)shm->guest_heartbeat_seq,
+             net_tx_sent ? "yes" : "no", net_rx_confirmed ? "yes" : "no");
     log_both(shm, NTBRIDGE_LOG_INFO, summary);
 
     munmap(map, map_size);
     close(fd);
+    /* Exit status reflects only the PnP round-trip this test already
+     * gated on before Phase 7 - the network round-trip additionally
+     * needs the host-side TAP echo script running (see
+     * tests/reactos/net-tap-echo.py), which isn't always present (e.g.
+     * plain tests/reactos/run-test.sh doesn't start one), so a missing
+     * net_rx_confirmed alone must not fail runs that never asked for
+     * network verification. driver/net/reactos/run-test.sh (Phase 7's
+     * own test) checks net_rx_confirmed itself, via this line in the
+     * log, rather than this process's exit code. */
     return 0;
 }

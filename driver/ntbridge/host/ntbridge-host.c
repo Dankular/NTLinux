@@ -20,6 +20,18 @@
  *     udev enumerator does not touch anything else in this file) and
  *     tracks which ones the guest side acknowledges via pnp_ack_ring.
  *
+ * Phase 7 (NDIS bridge, ARCHITECTURE.md section 22) adds a fourth: with
+ * --tap <ifname>, bridges net_tx_ring/net_rx_ring to a real Linux TAP
+ * device — frames the guest NDIS miniport (driver/net/reactos/ntnet.c)
+ * sends land in net_tx_ring and get written straight to the TAP fd
+ * (appearing to Linux exactly like a frame a real NIC received); frames
+ * read off the TAP fd (Linux sending out through it) get pushed into
+ * net_rx_ring for the miniport to indicate as received. No protocol
+ * translation happens here — raw Ethernet frames in, raw Ethernet
+ * frames out, same "NTLinux does not need to route ordinary host
+ * networking through the Windows TCP/IP stack" design ARCHITECTURE.md
+ * section 22 describes.
+ *
  * The fourth deliverable — the actual bootable ReactOS image + KVM/QEMU
  * launcher — is driver/cell/images/ + driver/cell/launcher/ntcell; this
  * daemon doesn't know or care whether the process on the other end of
@@ -43,13 +55,49 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
+#include <linux/if.h>
+#include <linux/if_tun.h>
+
 #include "ntbridge_protocol.h"
+
+/*
+ * Opens/creates a Linux TAP device (IFF_TAP: whole Ethernet frames, not
+ * IFF_TUN's IP-only packets — the miniport speaks raw Ethernet, so this
+ * is the layer that matches). IFF_NO_PI: no 4-byte packet-info prefix,
+ * since NTBRIDGE_NET_FRAME_MAX-sized slots already carry exactly one
+ * frame, no extra framing needed on either side.
+ */
+static int open_tap(const char *ifname_in, char *ifname_out, size_t ifname_out_len)
+{
+    int fd = open("/dev/net/tun", O_RDWR);
+    if (fd < 0) {
+        fprintf(stderr, "ntbridge-host: open(/dev/net/tun): %s "
+                "(need CAP_NET_ADMIN / root, and the tun module loaded)\n", strerror(errno));
+        return -1;
+    }
+
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+    if (ifname_in)
+        strncpy(ifr.ifr_name, ifname_in, IFNAMSIZ - 1);
+
+    if (ioctl(fd, TUNSETIFF, &ifr) < 0) {
+        fprintf(stderr, "ntbridge-host: ioctl(TUNSETIFF): %s\n", strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    snprintf(ifname_out, ifname_out_len, "%s", ifr.ifr_name);
+    return fd;
+}
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_signal(int sig) { (void)sig; g_stop = 1; }
@@ -188,6 +236,7 @@ int main(int argc, char **argv)
     uint32_t shm_size = NTBRIDGE_SHM_DEFAULT_SIZE;
     int duration_s = 15;
     int device_count = 3;
+    const char *tap_name_arg = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--shm") == 0 && i + 1 < argc) {
@@ -196,8 +245,10 @@ int main(int argc, char **argv)
             duration_s = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--devices") == 0 && i + 1 < argc) {
             device_count = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--tap") == 0 && i + 1 < argc) {
+            tap_name_arg = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0) {
-            printf("usage: %s [--shm PATH] [--duration SECONDS] [--devices N]\n", argv[0]);
+            printf("usage: %s [--shm PATH] [--duration SECONDS] [--devices N] [--tap IFNAME]\n", argv[0]);
             return 0;
         }
     }
@@ -219,6 +270,23 @@ int main(int argc, char **argv)
 
     int devices_seeded = seed_synthetic_devices(shm, device_count);
 
+    int tap_fd = -1;
+    char tap_ifname[IFNAMSIZ] = {0};
+    if (tap_name_arg) {
+        tap_fd = open_tap(tap_name_arg, tap_ifname, sizeof(tap_ifname));
+        if (tap_fd < 0) {
+            munmap(shm, shm_size);
+            close(fd);
+            return 1;
+        }
+        /* O_NONBLOCK so a read() with nothing available returns EAGAIN
+         * instead of blocking the same poll loop that also has to drain
+         * net_tx_ring and the other rings every tick. */
+        int flags = fcntl(tap_fd, F_GETFL, 0);
+        fcntl(tap_fd, F_SETFL, flags | O_NONBLOCK);
+        printf("ntbridge-host: bridging net_tx_ring/net_rx_ring to TAP device %s\n", tap_ifname);
+    }
+
     /* Track which of our seeded device_ids the guest side has acked, so
      * the exit status can be a real pass/fail oracle for
      * tests/reactos/run-test.sh, not just "the loop finished". */
@@ -229,6 +297,7 @@ int main(int argc, char **argv)
     int64_t deadline = start + (int64_t)duration_s * 1000000000LL;
     int64_t first_guest_heartbeat_ns = 0;
     uint64_t log_lines_seen = 0;
+    uint64_t tap_frames_in = 0, tap_frames_out = 0;
 
     printf("ntbridge-host: running for %ds, waiting on guest heartbeat + %d device ack(s)...\n",
            duration_s, devices_seeded);
@@ -258,6 +327,39 @@ int main(int argc, char **argv)
                    ack.status);
         }
 
+        if (tap_fd >= 0) {
+            /* guest -> host: drain everything the miniport has queued
+             * for send, write each frame straight to the TAP fd. */
+            ntbridge_net_frame_t frame;
+            while (ntbridge_net_ring_try_pop(&shm->net_tx_ring, &frame)) {
+                ssize_t w = write(tap_fd, frame.data, frame.length);
+                if (w < 0)
+                    fprintf(stderr, "ntbridge-host: TAP write: %s\n", strerror(errno));
+                else
+                    tap_frames_out++;
+            }
+
+            /* host -> guest: drain whatever Linux has queued to send out
+             * this TAP interface, push each frame into net_rx_ring for
+             * the miniport to indicate as received. */
+            for (;;) {
+                ntbridge_net_frame_t frame;
+                ssize_t r = read(tap_fd, frame.data, NTBRIDGE_NET_FRAME_MAX);
+                if (r < 0) {
+                    if (errno != EAGAIN && errno != EWOULDBLOCK)
+                        fprintf(stderr, "ntbridge-host: TAP read: %s\n", strerror(errno));
+                    break;
+                }
+                if (r == 0)
+                    break;
+                frame.length = (uint32_t)r;
+                if (ntbridge_net_ring_try_push(&shm->net_rx_ring, &frame))
+                    tap_frames_in++;
+                else
+                    fprintf(stderr, "ntbridge-host: net_rx_ring full, dropped a TAP frame\n");
+            }
+        }
+
         uint64_t guest_seq = __atomic_load_n(&shm->guest_heartbeat_seq, __ATOMIC_ACQUIRE);
         if (guest_seq > 0 && first_guest_heartbeat_ns == 0) {
             first_guest_heartbeat_ns = now_ns();
@@ -266,15 +368,26 @@ int main(int argc, char **argv)
                    (double)(first_guest_heartbeat_ns - start) / 1e9);
         }
 
-        struct timespec tick = { .tv_sec = 0, .tv_nsec = 100 * 1000 * 1000 }; /* 100ms poll */
+        /* Tighter poll while bridging network traffic — 100ms round-trip
+         * latency is fine for the PnP/log rings' test-scale traffic but
+         * would make even a synthetic ping-style test feel broken; still
+         * a poll, not an interrupt (see the doorbell note), just a
+         * shorter one. */
+        struct timespec tick = { .tv_sec = 0, .tv_nsec = (tap_fd >= 0 ? 10 : 100) * 1000 * 1000 };
         nanosleep(&tick, NULL);
     }
 
     printf("ntbridge-host: summary — guest heartbeat: %s, log lines received: %llu, "
-           "devices acked: %d/%d\n",
+           "devices acked: %d/%d",
            first_guest_heartbeat_ns ? "yes" : "no",
            (unsigned long long)log_lines_seen, acked_count, devices_seeded);
+    if (tap_fd >= 0)
+        printf(", TAP frames host->guest: %llu, guest->host: %llu",
+               (unsigned long long)tap_frames_in, (unsigned long long)tap_frames_out);
+    printf("\n");
 
+    if (tap_fd >= 0)
+        close(tap_fd);
     munmap(shm, shm_size);
     close(fd);
 

@@ -42,7 +42,16 @@ DRIVER_DIR="$(cd "$CELL_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$DRIVER_DIR/.." && pwd)"
 
 SHM_PATH="${NTCELL_SHM_PATH:-/dev/shm/ntlinux-ntbridge-cell0}"
-SHM_SIZE_MB=1
+# Must match NTBRIDGE_SHM_DEFAULT_SIZE in driver/ntbridge/protocol/
+# ntbridge_protocol.h (currently 4 MiB, bumped from 1 MiB in Phase 7 for
+# net_tx_ring/net_rx_ring) - QEMU sizes the guest's PCI BAR2 from this
+# value, so a mismatch here makes the guest's mmap() of the region fail
+# with EINVAL (real bug, found live: the guest test client's resource2
+# mmap failed after the Phase 7 protocol bump until this was updated to
+# match - see ROADMAP.md Phase 7). This is a real cross-language
+# duplication this bash script can't avoid by #include-ing the C header;
+# keep the two in sync by hand when NTBRIDGE_SHM_DEFAULT_SIZE changes.
+SHM_SIZE_MB=4
 
 accel() {
     if [ -w /dev/kvm ] 2>/dev/null; then

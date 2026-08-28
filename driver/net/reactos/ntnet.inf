@@ -1,0 +1,65 @@
+; ntnet.inf - installs the ReactOS-side NDIS bridge miniport (ntnet.sys)
+; against the ivshmem PCI function QEMU exposes for the driver cell
+; (driver/cell/launcher/ntcell's -device ivshmem-plain), matching
+; driver/ntbridge/reactos/ntbridge.inf's shape but Class=Net for the
+; Network Adapters install path (Add Hardware wizard / device manager
+; "Update Driver").
+;
+; NOT YET TESTED live - see this directory's README. Matches
+; NTBRIDGE_IVSHMEM_VENDOR_ID/DEVICE_ID from
+; driver/ntbridge/protocol/ntbridge_protocol.h (0x1AF4 / 0x1110), same
+; as ntbridge.inf - both drivers can legitimately claim the same
+; hardware ID in principle (a real ivshmem device could carry both a
+; bus function and a network function), but this project has not
+; attempted running both against the same cell simultaneously; today
+; each is verified independently.
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = Net
+ClassGuid   = {4D36E972-E325-11CE-BFC1-08002BE10318}
+Provider    = %NTLinux%
+DriverVer   = 08/28/2026,0.1.0.0
+
+[Manufacturer]
+%NTLinux% = NTLinux, NTx86
+
+[NTLinux.NTx86]
+%NtNet.DeviceDesc% = NtNet_Install, PCI\VEN_1AF4&DEV_1110
+
+[NtNet_Install]
+CopyFiles = NtNet_CopyFiles
+AddReg    = NtNet_AddReg
+
+[NtNet_Install.Services]
+AddService = ntnet, 0x00000002, NtNet_Service
+
+[NtNet_Service]
+DisplayName    = %NtNet.SvcDesc%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\ntnet.sys
+
+[NtNet_AddReg]
+HKR, Ndi,             Service,    0, "ntnet"
+HKR, Ndi\Interfaces,   UpperRange, 0, "ndis5"
+HKR, Ndi\Interfaces,   LowerRange, 0, "ethernet"
+
+[NtNet_CopyFiles]
+ntnet.sys
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+ntnet.sys = 1
+
+[DestinationDirs]
+NtNet_CopyFiles = 12 ; %SystemRoot%\System32\drivers
+
+[Strings]
+NTLinux           = "NTLinux"
+NtNet.DeviceDesc  = "NTLinux ntbridge Virtual Network Adapter"
+NtNet.SvcDesc     = "NTLinux ntnet - NDIS bridge (Phase 7)"
+DiskName          = "NTLinux Driver Support Disk"

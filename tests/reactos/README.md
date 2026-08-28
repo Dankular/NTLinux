@@ -1,9 +1,9 @@
 # ReactOS Driver-Cell Tests
 
-Tests for the ReactOS driver-cell prototype (Phase 4/5 success criteria).
+Tests for the ReactOS driver-cell prototype (Phase 4/5/7 success criteria).
 
 **Owner:** NTLinux
-**Status:** Implemented and passing (Phase 4)
+**Status:** Implemented and passing (Phase 4); network round-trip added and passing (Phase 7)
 
 `run-test.sh` is the Rule 11 test for Phase 4's ntbridge deliverables:
 builds `driver/ntbridge/host/ntbridge-host` and the components below,
@@ -59,5 +59,37 @@ unmodified ReactOS 0.4.15 kernel boots under the same launcher — a real
 QMP screendump of its Setup screen, not a mockup — covering the
 "minimal bootable ReactOS image" half of Phase 4 that this stand-in
 guest doesn't touch.
+
+## Phase 7 addition: the network round trip
+
+`ntbridge-guest-test.c` now also exercises `net_tx_ring`/`net_rx_ring`
+(ARCHITECTURE.md section 22's NDIS bridge — see `driver/net/README.md`):
+it pushes one tagged synthetic Ethernet frame into `net_tx_ring` at
+startup and watches `net_rx_ring` for a distinctly-tagged inbound frame,
+logging a `PASS`/content mismatch either way via `log_ring`.
+`driver/net/reactos/run-test.sh` (not this directory's `run-test.sh` —
+a separate script, since it also needs a real Linux TAP device and the
+`tests/reactos/net-tap-echo.py` raw-socket helper) is what actually
+drives this: it starts `ntbridge-host --tap`, starts `net-tap-echo.py`
+listening on that TAP interface via a plain `AF_PACKET` raw socket
+(genuinely what any ordinary Linux network application sees on that
+interface, not a special test hook), boots this same guest test client,
+and checks both directions — the guest's outbound frame really lands on
+a real Linux netdev, and a frame injected into that netdev really
+reaches the guest via `net_rx_ring`.
+
+**Verified live**: guest heartbeat detected, `net: pushed test frame to
+net_tx_ring` then `net: received expected test frame on net_rx_ring -
+PASS` in the guest's own log; `net-tap-echo.py` independently reports
+`captured guest frame ... PASS`; `ntbridge-host`'s summary shows `TAP
+frames host->guest: 1, guest->host: 1`. A **real bug found running this
+for the first time, not by inspection**: bumping
+`NTBRIDGE_PROTOCOL_VERSION`'s shm region from 1 MiB to 4 MiB (to fit the
+new rings) broke this guest client's `mmap()` of the ivshmem BAR2 with
+`EINVAL` — `driver/cell/launcher/ntcell`'s QEMU invocation had a
+hardcoded `SHM_SIZE_MB=1` that needed updating to match; fixed, with a
+comment explaining the cross-language duplication a bash script can't
+avoid by including the C header. Full transcript in `ROADMAP.md`
+Phase 7.
 
 See [`docs/ARCHITECTURE.md`](/docs/ARCHITECTURE.md) for full architectural context and [`ROADMAP.md`](/ROADMAP.md) for phase sequencing. Before implementing anything here, check whether the capability already exists upstream (Wine / Proton / ReactOS / Linux / Mesa / DXVK / vkd3d-proton / Gamescope / PipeWire / VFIO-IOMMU-KVM) per Rule 1 in `CLAUDE.md`.
