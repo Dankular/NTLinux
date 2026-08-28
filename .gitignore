@@ -13,6 +13,7 @@ __pycache__/
 /ntd/ntd
 /ntabi/lib/*.o
 /ntabi/lib/*.a
+/ntabi/lib/*.so
 /ntabi/tests/test_ntabi
 
 # Cross-compiled Windows binary - build with `make` in tooling/compat-db/ntexports/.
