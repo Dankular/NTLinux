@@ -39,6 +39,13 @@ two independently real, run checks, not one proxy for both.
 - **KMDF**: not a per-symbol question — checked as a single yes/no by
   looking for any `wdf*.h` header or `libwdf*.a`/`Wdf01000*` import
   library anywhere in the toolchain.
+- **WDDM/DXGKRNL**: same whole-framework shape as KMDF, added for
+  Phase 11/ADR-0003 (native Windows GPU driver hosting) — checks for
+  any `dxgkrnl*.h`/`d3dkmthk*.h`/`d3dukmdt*.h`/`kmddod*.h` header or a
+  `dxgkrnl` import library. Deliberately distinct from this toolchain's
+  abundant *usermode* Direct3D headers (`d3d9.h`, `d3d11.h`, `d3d12.h`,
+  ...), which are for applications consuming Direct3D, not a kernel-mode
+  driver implementing a WDDM miniport.
 
 A symbol can be `abi_present` without `header_declared` — found for
 real, not hypothesized, running this: `NdisMRegisterMiniportDriver`,
@@ -81,6 +88,8 @@ NDIS 6.x (connectionless miniport model):
   NdisAllocateNetBufferListPool         abi-only (header gap)
 
 KMDF: not present in this toolchain at all
+WDDM/DXGKRNL: not present in this toolchain at all (no dxgkrnl.h/
+              d3dkmthk.h/etc., no dxgkrnl import library)
 ```
 
 ## What this actually says about Phase 9's scope

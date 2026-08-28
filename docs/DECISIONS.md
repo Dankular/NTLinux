@@ -117,6 +117,39 @@ get there already exists rather than needing new invention:
   a driver-hosted GPU is an opt-in path for otherwise-unsupported hardware,
   never a detour on the default Vulkan path normal games take.
 
+**Update (Phase 11, real research pass):** "WDDM/DXGKRNL support that
+mostly doesn't exist yet" undersold and oversimplified ReactOS's actual
+state, checked directly rather than assumed. Real, current facts,
+sourced: ReactOS's official blog (`reactos.org/blogs/investigating-wddm/`,
+Oct 7, 2025 — still the only post on the topic as of this check) reports
+a real, working, early Dxgkrnl implementation — VidPn negotiation and
+KMDOD miniport init are enough to run Microsoft's own `BasicDisplay.sys`
+WDK sample *and* a real NVIDIA Windows 7 GPU driver, producing actual
+display output at native resolution. Explicitly not yet working: 3D
+acceleration, scheduling, full memory management, the complete D3DKMT
+API, and the usermode driver (UMD) component — meaning Direct3D/compute
+workloads (this ADR's actual payoff scenarios) still have no path, only
+passive 2D display does. The blog is explicit that this whole effort
+depends on ReactOS's XDDM/`CDD.dll` foundation being solid first.
+
+Separately, and unaffected by ReactOS's own progress: this project's own
+mingw-w64 DDK toolchain has **zero** WDDM/DXGKRNL kernel-mode headers or
+import libraries (`tooling/compat-db/ddkgap/` checks this directly, now
+as a standing, re-runnable check, not a one-off finding) — distinct from
+the abundant *usermode* Direct3D headers (`d3d9.h`/`d3d11.h`/`d3d12.h`)
+already present for ordinary Windows applications. Even setting hardware
+aside, NTLinux's own toolchain has nothing to build a cell-side WDDM
+integration against yet; those headers would need to come from ReactOS's
+own in-progress work or a compatible subset of Microsoft's public WDK.
+
+Phase 6's hardware finding stands unchanged and is the harder blocker in
+practice: this project has not run in any sandbox with VFIO/IOMMU/real
+PCI passthrough available, and Phase 11's success criterion requires a
+real second physical GPU passed through via VFIO — categorically
+different from a toolchain or upstream-code gap, needs real user
+hardware to ever attempt. See `ROADMAP.md` Phase 11 for the full,
+sourced writeup.
+
 ---
 
 ## ADR-0004 — Desktop shell: LingmoOS is the reference/reuse target for Windows-like look and feel

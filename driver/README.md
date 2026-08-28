@@ -3,7 +3,7 @@
 Hosted ReactOS NT kernel environment for running real Windows .sys drivers safely under KVM/VFIO (ARCHITECTURE.md sections 12-27).
 
 **Owner:** ReactOS (kernel semantics) + NTLinux (hosting/bridge)
-**Status:** Driver-cell prototype verified end-to-end (Phase 4); first real driver loads and performs I/O inside real ReactOS (Phase 5); NDIS and USB bridges verified end-to-end over a QEMU VM boundary (Phases 7-8)
+**Status:** Driver-cell prototype verified end-to-end (Phase 4); first real driver loads and performs I/O inside real ReactOS (Phase 5); NDIS and USB bridges verified end-to-end over a QEMU VM boundary (Phases 7-8); GPU driver hosting scoped as real, sourced research (Phase 11)
 
 Phase 4 delivered the driver-cell prototype ARCHITECTURE.md sections
 14-19 describe, to the extent this sandbox can genuinely verify:
@@ -42,6 +42,13 @@ Phase 4 delivered the driver-cell prototype ARCHITECTURE.md sections
   Controller Driver, see its own README for why) plus
   `ntbridge/host`'s `--usb-echo` mode. Same verified-transport/
   not-yet-loaded-live split as `net/`.
+
+- `gpu/` (Phase 11, research) — native Windows WDDM GPU driver hosting.
+  Real, sourced research done (ReactOS's own early/2D-only WDDM
+  progress, this toolchain's WDDM/DXGKRNL header gap, the same
+  hardware-passthrough absence as `vfio/`) but no code — three
+  independent blockers, none fixable from any sandbox this project has
+  run in. See its own README and ROADMAP.md Phase 11.
 
 `iommu/`, `storage/`, `vfio/` are still untouched — later-phase
 territory (`vfio/` is Phase 6, explicitly deferred: this sandbox has no

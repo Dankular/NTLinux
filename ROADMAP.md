@@ -1072,7 +1072,7 @@ entirely).
 
 ---
 
-## Phase 11 — Native Windows GPU driver hosting (research) ⬜
+## Phase 11 — Native Windows GPU driver hosting (research) 🟨 (real, sourced research complete for what a "research milestone" phase calls for; implementation remains categorically out of reach — no VFIO/IOMMU in any sandbox this project has run in, no WDDM/DXGKRNL surface in this toolchain, and ReactOS's own upstream WDDM work is early/2D-only)
 
 Not an MVP dependency (`docs/ARCHITECTURE.md` section 30) — the default
 gaming path stays DXVK/vkd3d-proton on Mesa/Vulkan (section 47), and this
@@ -1084,8 +1084,8 @@ mediating the actual hardware.
 
 **Depends on:** Phases 4-9 — a GPU driver is one of the hardest classes of
 Windows driver, not a good early target (section 55: avoid the primary GPU
-in earlier phases). Requires ReactOS WDDM/DXGKRNL support that mostly
-doesn't exist yet (section 29) — build it there, upstreamed, per Rule 3.
+in earlier phases). Requires ReactOS WDDM/DXGKRNL support (section 29) —
+build it there, upstreamed, per Rule 3.
 
 **Why it's worth it:** covers hardware/workloads Mesa can't — brand-new
 GPUs ahead of open-source driver support, vendor features or professional/
@@ -1096,6 +1096,84 @@ Linux driver is meaningfully behind.
 non-primary GPU inside the driver cell, rendering output reaches the host
 compositor through the existing VFIO/IOMMU-mediated path, and Linux
 survives a driver crash inside the cell (section 26).
+
+### Why this phase is scoped as research, not implementation
+
+Unlike Phases 4-10, this phase's own title already says "(research)" —
+ADR-0003 promoted it from an architecture footnote to a tracked phase
+specifically as a research milestone, not an implementation one. Treating
+"do it in full" as "write driver code and live-verify it" here would mean
+writing code against a kernel-mode interface that doesn't exist in this
+project's own toolchain, targeting an upstream ReactOS subsystem that is
+itself only weeks-old and 2D-only, to run against hardware no sandbox
+this project has ever run in can provide — the opposite of this project's
+own standard (verify by running, not by inspection). What a research
+phase's "in full" means instead: chase down real, current, sourced facts
+— not assumptions, not the original text's own hedge ("mostly doesn't
+exist yet") — and produce the scoped, honest picture the next real
+implementation attempt would start from.
+
+### Three independent blockers, checked separately, not conflated
+
+**1. ReactOS's own WDDM/DXGKRNL support — real, but early and 2D-only.**
+Checked directly against ReactOS's official blog
+(`reactos.org/blogs/investigating-wddm/`, Oct 7 2025 — still the only
+post on the subject) rather than assumed from the architecture doc's
+original hedge. Real, working, and more than expected going in: a real
+experimental Dxgkrnl (VidPn negotiation + KMDOD miniport init) has
+loaded Microsoft's own `BasicDisplay.sys` WDK sample *and* a real NVIDIA
+Windows 7 GPU driver, producing actual 2D display output at native
+resolution — a genuine, verified result on ReactOS's part, not
+vaporware. Explicitly not yet implemented, per that same post: 3D
+acceleration, scheduling, full hardware memory management, the complete
+D3DKMT API, and the usermode driver (UMD) component. This matters
+concretely for this phase's own stated payoff: "brand-new GPUs,"
+"professional/compute workloads," and anything DXVK/vkd3d-proton would
+otherwise handle all need Direct3D/compute execution, which needs the
+still-missing 3D half — a real Windows GPU driver could plausibly
+produce a *picture* on ReactOS today, per this result, but nothing this
+phase actually cares about runs yet. The blog is explicit the whole
+effort further depends on ReactOS's legacy XDDM/`CDD.dll` stack being
+solid first — a second, upstream-side dependency chain of its own.
+
+**2. This project's own DDK toolchain — zero WDDM/DXGKRNL surface at
+all, checked directly, not assumed.** `tooling/compat-db/ddkgap/` (built
+for Phase 9) now carries a standing WDDM/DXGKRNL check alongside its
+KMDF one: no `dxgkrnl.h`/`d3dkmthk.h`/`d3dukmdt*.h`/`kmddod*.h`, no
+`dxgkrnl` import library, anywhere under mingw-w64's packaged headers —
+confirmed by direct search, re-runnable, not a one-off finding. Notably
+distinct from this same toolchain's abundant *usermode* Direct3D headers
+(`d3d9.h` through `d3d12.h`) — those are for applications consuming
+Direct3D (games, DXVK's own host side), not for a kernel-mode driver
+implementing a WDDM miniport, and their presence doesn't help here at
+all. Even if ReactOS's upstream WDDM work matures past blocker 1, this
+project would still need to source these kernel-mode headers from
+ReactOS's own in-progress tree (or a compatible WDK subset) before
+writing a single line of cell-side integration code.
+
+**3. Real second-GPU hardware behind VFIO/IOMMU — categorically absent
+from every sandbox this project has run in, unchanged since Phase 6.**
+This is the blocker with no toolchain or upstream-code fix: Phase 6's
+findings (`/dev/vfio` doesn't exist, `/sys/kernel/iommu_groups` is empty,
+no `vmx`/`svm` CPU flags, a Firecracker microVM has no PCI bus or virtual
+IOMMU by architectural design) apply identically here, and a "non-primary
+GPU passed through via VFIO" is definitionally physical hardware — there
+is no honest software-only substitute for it the way a TAP device stood
+in for Phase 7's network interface, or `--usb-echo` stood in for Phase
+8's USB bridge. This blocker needs real user hardware to ever attempt,
+in any sandbox shaped like the ones this project has used.
+
+### What this means for "in full"
+
+All three blockers are independent — fixing any one doesn't unblock the
+others, and this pass fixed none of them (none are fixable from inside
+this sandbox). What changed this pass: the picture is now real and
+sourced instead of assumed. `docs/DECISIONS.md` ADR-0003 carries the
+same update. Revisit this phase once blocker 3 lifts (real hardware with
+VFIO/IOMMU available) — at that point blockers 1 and 2 become the actual
+gating work, and by then ReactOS's own WDDM effort will likely have
+moved past its Oct-2025-vintage 2D-only state, worth re-checking fresh
+rather than assumed stale.
 
 ---
 

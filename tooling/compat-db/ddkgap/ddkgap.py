@@ -100,6 +100,15 @@ CATEGORIES = {
 KMDF_HEADER_GLOBS = ("wdf*.h",)
 KMDF_LIB_GLOBS = ("libwdf*.a", "*Wdf01000*")
 
+# Same whole-framework shape as KMDF, for Phase 11 (ROADMAP.md, ADR-0003):
+# the kernel-mode WDDM/DXGKRNL miniport interface (dxgkrnl.h, d3dkmthk.h,
+# the D3DKMT* usermode-to-kernel escape surface) is a distinct thing from
+# the *usermode* Direct3D headers (d3d9.h/d3d11.h/d3d12.h etc.) this
+# toolchain already ships in abundance - this checks specifically for the
+# kernel-mode side, which a driver-cell-hosted WDDM miniport would need.
+WDDM_HEADER_GLOBS = ("dxgkrnl*.h", "d3dkmthk*.h", "d3dukmdt*.h", "kmddod*.h")
+WDDM_LIB_GLOBS = ("*dxgkrnl*",)
+
 
 def lib_path(lib_dir: Path, name: str) -> Path:
     return lib_dir / f"lib{name}.a"
@@ -138,14 +147,19 @@ def header_declares(inc_dirs: list[Path], symbol: str) -> str | None:
     return None
 
 
-def check_kmdf(ddk_inc: Path, root_inc: Path, lib_dir: Path) -> dict:
+def check_framework(ddk_inc: Path, root_inc: Path, lib_dir: Path,
+                     header_globs: tuple[str, ...], lib_globs: tuple[str, ...]) -> dict:
+    """Whole-framework presence check (KMDF, WDDM/DXGKRNL, ...) - these
+    aren't a per-symbol question the way an individual ntoskrnl export
+    is; either the framework's headers/import library exist in this
+    toolchain at all, or they don't."""
     headers = []
     for inc_dir in (ddk_inc, root_inc):
         if inc_dir.is_dir():
-            for pat in KMDF_HEADER_GLOBS:
+            for pat in header_globs:
                 headers.extend(str(p) for p in inc_dir.rglob(pat))
     libs = []
-    for pat in KMDF_LIB_GLOBS:
+    for pat in lib_globs:
         libs.extend(str(p) for p in lib_dir.glob(pat))
     return {"headers_found": sorted(set(headers)), "libs_found": sorted(set(libs)),
             "available": bool(headers or libs)}
@@ -154,7 +168,11 @@ def check_kmdf(ddk_inc: Path, root_inc: Path, lib_dir: Path) -> dict:
 def run(ddk_inc: Path, root_inc: Path, lib_dir: Path) -> dict:
     inc_dirs = [ddk_inc, root_inc]
     lib_cache: dict[str, set[str]] = {}
-    report = {"categories": {}, "kmdf": check_kmdf(ddk_inc, root_inc, lib_dir)}
+    report = {
+        "categories": {},
+        "kmdf": check_framework(ddk_inc, root_inc, lib_dir, KMDF_HEADER_GLOBS, KMDF_LIB_GLOBS),
+        "wddm": check_framework(ddk_inc, root_inc, lib_dir, WDDM_HEADER_GLOBS, WDDM_LIB_GLOBS),
+    }
 
     for category, symbols in CATEGORIES.items():
         entries = []
@@ -200,6 +218,20 @@ def print_summary(report: dict) -> None:
     else:
         print("  [MISS] not present in this toolchain at all — no wdf*.h, no Wdf01000/libwdf*.a."
               " Any KMDF driver work needs this brought in first (real follow-up, not a header patch).")
+
+    w = report["wddm"]
+    print(f"\nWDDM/DXGKRNL (kernel-mode graphics miniport interface, Phase 11/ADR-0003):")
+    if w["available"]:
+        print(f"  [OK  ] present — headers: {w['headers_found']}, libs: {w['libs_found']}")
+    else:
+        print("  [MISS] not present in this toolchain at all — no dxgkrnl.h/d3dkmthk.h/etc., no"
+              " dxgkrnl import library. Distinct from the usermode Direct3D headers (d3d9.h,"
+              " d3d11.h, d3d12.h, ...) this toolchain ships in abundance - those are for"
+              " applications *consuming* Direct3D, not for a kernel-mode driver *implementing* a"
+              " WDDM miniport. See ROADMAP.md Phase 11 for the full picture: ReactOS itself has"
+              " only an early, display-only-2D, no-3D-acceleration experimental Dxgkrnl as of"
+              " its October 2025 blog post — this toolchain's own DDK package hasn't caught up"
+              " to even that yet.")
 
 
 def main() -> int:
