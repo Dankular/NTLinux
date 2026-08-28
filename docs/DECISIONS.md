@@ -239,3 +239,69 @@ prototype:
   its own README, `driver/ntbridge/README.md`, and
   `tests/reactos/README.md` all state the same boundary consistently,
   so no document overstates what Phase 4 actually proved.
+
+---
+
+## ADR-0006 — Musa.Veil is a reference source for NT struct/prototype declarations, not a vendored dependency; hand-declare the small subset actually needed
+
+**Date:** 2026-08-27
+
+**Decision:** [MiroKaku/Musa.Veil](https://github.com/MiroKaku/Musa.Veil)
+(MIT-licensed, header-only NT API declarations — same lineage as System
+Informer's PHNT and Chuyu-Team's MINT) is used as a **reference source**
+for getting undocumented NT struct/enum layouts right, not compiled or
+linked into this repo. `tooling/compat-db/ntprobe/ntprobe.c` hand-declares
+the ~4 structures it needs (`SYSTEM_BASIC_INFORMATION`,
+`PROCESS_BASIC_INFORMATION`, `OBJECT_BASIC_INFORMATION`, three
+information-class values), each cross-referenced against Musa.Veil's own
+declaration at the point of use, and resolves the `Nt*` function
+prototypes it calls against mingw-w64's own `libntdll.a` import stub
+(confirmed present via `nm`) rather than against anything Musa.Veil
+provides.
+
+**Rationale:** Musa.Veil is not, and cannot be, "a wrapper and service to
+NTLinux to support calls that Wine can't" (the framing this ADR responds
+to) — it ships zero runtime code, so there's no service to wrap, and no
+call it can make succeed that wouldn't already succeed against a real
+`ntdll.dll`. Its actual, legitimate value is as ground truth for
+undocumented struct layouts. But actually attempting to `#include` its
+headers under this project's MinGW cross-compilation toolchain (the one
+`ntexports.exe`/`ntprobe.exe` both use) failed hard and instructively:
+101 errors from the library's own intended entry point (`Veil.h`), 763
+from trying to isolate a single narrow sub-header instead — MSVC-only SAL
+macros MinGW doesn't define, MSVC-extension `enum` forward declarations
+GCC rejects, real redefinition conflicts against MinGW's own
+`<windows.h>`, and — most tellingly — several `_Static_assert(sizeof(...)
+== N)` checks on deeply nested/bitfield-heavy structures that fail even
+with `-mms-bitfields`, a genuine GCC-vs-MSVC struct-layout ABI mismatch
+for those specific types. Patching that to make the full library MinGW-
+buildable would mean maintaining a parallel fork of most of a 30-file
+library indefinitely, for a probe that needs four structures total — a
+cost wildly disproportionate to the need (Rule 2), and not the kind of
+small, upstreamable patch Rule 3 favors taking on (the incompatibility is
+architectural to the library's MSVC-only design, not a bug).
+Hand-transcribing the specific structures needed is low-risk precisely
+because they're long-stable NT ABI (unchanged since the Windows
+2000/XP-era `ntdll`) — not the newer/larger structures where the
+static-assert failures actually occurred — and keeps the ownership of
+"what's correct" traceable to Musa.Veil's declaration at each use site
+(Rule 15), without inheriting a large, non-portable dependency for four
+structs.
+
+**Consequences:**
+- No Musa.Veil source is vendored or fetched at build time anywhere in
+  this repo; nothing here depends on it compiling.
+- `tooling/compat-db/ntprobe/` exists as a new tool (companion to
+  `ntexports/`) doing real differential behavioral testing — actual
+  `Nt*`/`Zw*` calls against a real `ntdll`, not just export-table
+  presence — verified live under Wine in this session: 4/4 probes
+  passed, including the exact auto-reset Event state machine `ntd/ntd.c`
+  reimplements, giving Phase 12's eventual `ntdll` integration work a
+  real behavioral reference to validate against.
+- If a future need genuinely requires a much larger slice of undocumented
+  NT struct coverage than hand-transcription stays proportionate for,
+  revisit MinGW-compatibility patching against Musa.Veil (or building the
+  relevant tool with MSVC instead of cross-compiling, if a Windows build
+  environment becomes available) rather than continuing to hand-transcribe
+  indefinitely — this ADR's conclusion is scoped to today's four-struct
+  need, not a permanent verdict on the library.

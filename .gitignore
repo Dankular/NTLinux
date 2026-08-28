@@ -28,3 +28,7 @@
 
 # Scratch download/build cache, not repo content.
 /.build-cache/
+
+# ntprobe: cross-compiled Windows binary and its output.
+/tooling/compat-db/ntprobe/ntprobe.exe
+/tooling/compat-db/ntprobe/*-results.json
