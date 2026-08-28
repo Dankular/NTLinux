@@ -149,6 +149,20 @@ any of this: blocker 3 in particular needs VFIO/IOMMU, a Linux kernel
 facility this Windows host cannot provide regardless of what GPU is
 attached to it.
 
+## A separate, adjacent capability: Parsec VDD display fallback
+
+`parsec-fallback/` in this directory is **not** part of Phase 11's own
+scope (it doesn't touch ReactOS, VFIO/IOMMU, or WDDM/DXGKRNL at all —
+see that directory's own README for the explicit boundary), but it's
+real, live-verified work that surfaced from the same research pass:
+this project's own Windows-host sandbox turned out to already have
+"Parsec Virtual Display Adapter" installed and healthy — the same
+adapter noticed below as evidence this host is remotely operated. A
+real usermode client there drives it live, adding and removing an
+actual virtual display (`SM_CMONITORS` genuinely observed going
+1 → 2 → 1). Kept filed next to, but clearly distinct from, this
+directory's actual Phase 11 research.
+
 ## The three blockers, corrected
 
 1. **ReactOS's own WDDM/DXGKRNL support is real but early and 2D-only**

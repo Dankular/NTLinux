@@ -1285,6 +1285,24 @@ check whether a real, legitimate upstream source has what's missing
 before declaring it absent. That check wasn't made here the first time,
 and should have been.
 
+### A separate, adjacent capability found via this research: a real Parsec VDD display fallback (not part of this phase's own blockers)
+
+Stated up front so it's never conflated with the above: this resolves
+**none** of the three blockers. It's a distinct, smaller capability
+that surfaced because this research pass's host happened to already
+have "Parsec Virtual Display Adapter" (ParsecVDA) installed and healthy
+— the same adapter cited above as evidence this host is remotely
+operated. `driver/gpu/parsec-fallback/` is a real usermode client for
+its public control API (`parsec-vdd.h`, BSD-3-clause,
+github.com/nomi-san/parsec-vdd) — live-verified on this host:
+`Get-CimInstance`-confirmed `DEVICE_OK`, driver version 45, and a real
+add/remove cycle where `GetSystemMetrics(SM_CMONITORS)` genuinely went
+1 → 2 → 1, read back from Windows itself, not asserted. Doesn't touch
+ReactOS, VFIO/IOMMU, or WDDM/DXGKRNL — it's a fallback display path
+usable today on hosts that already carry this adapter, nothing more.
+See `driver/gpu/parsec-fallback/README.md` for the full live-run output
+and exact scope boundary.
+
 ---
 
 ## Phase 12 — ntdll integration & remaining NT object types 🟨 (Thread objects + APC support done and verified; real Wine `ntdll` integration remains genuinely out of reach in this sandbox)

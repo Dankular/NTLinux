@@ -54,6 +54,13 @@ __pycache__/
 # artifact above).
 /driver/gpu/build/
 /driver/gpu/wddm-probe.o
+
+# parsec-vdd.h (driver/gpu/parsec-fallback/fetch-parsec-vdd-header.sh) -
+# fetched fresh, never committed (same ADR-0002/Rule 17 shape as above);
+# and the compiled Windows-host-only client (build-parsec-fallback.bat).
+/driver/gpu/parsec-fallback/build/
+/driver/gpu/parsec-fallback/ntlinux-parsec-fallback.exe
+/driver/gpu/parsec-fallback/ntlinux-parsec-fallback.obj
 /driver/usb/reactos/*.o
 /driver/usb/reactos/*.sys
 /driver/usb/reactos/ntusb_test.exe
