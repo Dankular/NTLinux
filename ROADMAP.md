@@ -1506,41 +1506,100 @@ not, and this phase stays 🟨 rather than ✅ until they are.
 
 ---
 
-## Phase 13 — RosBE & the ROS-NTCELL stripped driver-cell profile ⬜
+## Phase 13 — RosBE & the ROS-NTCELL stripped driver-cell profile 🟨 (RosBE itself turned out to be unnecessary — the real ReactOS kernel, HAL, and bootloader all compile clean from source with this project's existing mingw-w64 toolchain, verified live; a full bootable minimal ROS-NTCELL image is not yet assembled)
 
 Moved out of Phase 4, where it originally sat as a "known gap," once
 Phase 5 established that RosBE's actual scope is much narrower than
 Phase 4 assumed: **driver** source (`ntbridge_pnp.c`, `vsdev.c`, and any
 future NTLinux-authored driver) builds fine against mingw-w64's DDK
 toolchain, no RosBE needed — that correction lives in Phase 4 and
-`driver/ntbridge/reactos/README.md`. What genuinely still needs RosBE is
-building **ReactOS itself** from source, which this project has never
-attempted:
+`driver/ntbridge/reactos/README.md`. What genuinely still needed
+checking was building **ReactOS itself** from source.
 
-- [ ] Stand up the RosBE cross-toolchain (out of reach in every sandbox
-      this project has run in so far — a real, separate undertaking
-      comparable in kind to the full Wine source build Phase 2/12
-      already deferred for the same reason).
-- [ ] Build the stripped, driver-only **ROS-NTCELL** boot profile
-      `docs/ARCHITECTURE.md` section 15 describes (HAL/ntoskrnl/
-      registry/PnP/IoMgr/ObMgr/MM/driver-loader/bridge-transport only —
-      no Explorer/Winlogon/GDI shell), replacing the stock general-
-      purpose ReactOS release/nightly ISOs `driver/cell/images/
-      fetch-reactos-iso.sh` currently fetches (see that directory's
-      README's "known gap").
-- [ ] Once RosBE exists, revisit whether `driver/ntbridge/reactos/
-      ntbridge_pnp.c`'s two flagged bugs (missing wait-for-lower-IRP-
-      completion; `IoCreateDevice` from DISPATCH_LEVEL) are easier to
-      catch/fix building inside a full ReactOS source tree (e.g. against
-      its own driver-verifier tooling) than the standalone mingw-w64
-      build this project uses today — not required, but worth checking
-      once the option exists.
+### Real, live result: RosBE was never actually needed, checked directly rather than assumed
+
+A later pass, with real access to a Linux build server, checked the
+premise directly instead of assuming a RosBE bootstrap was required
+first (Rule 1). `ROS_ARCH=amd64 ./configure.sh` — bypassing RosBE
+entirely — configured cleanly against the **stock Debian
+`gcc-mingw-w64-x86-64` package** already used throughout this project
+(the same one `driver/gpu/`, `driver/kmdf/`, `driver/net/reactos/`,
+etc. all build against), with only a cosmetic CMake warning about not
+using RosBE's own bundled CMake.
+
+Building hit one real, root-caused issue, not a RosBE-shaped one:
+**GCC 14 made `-Wincompatible-pointer-types` a hard error by default**
+(a real GCC 14 behavior change) — ReactOS's own source (and its bundled
+`libtirpc` third-party code) predates that default and has genuine,
+harmless-in-practice type mismatches (`uint32_t*` vs `ULONG*`, same
+width, different type) that GCC 14 now refuses outright where older
+GCC versions only warned. This is plausibly the *actual* reason RosBE
+pins an older GCC — not exotic ReactOS-specific patches, just predating
+a stricter upstream GCC default. Fixed with a real, narrow, standard
+fix: `-DCMAKE_C_FLAGS='-Wno-error=incompatible-pointer-types
+-Wno-error=implicit-function-declaration -Wno-error=int-conversion'`
+(downgrading these three GCC 14 defaults back to warnings, not
+silencing the diagnostics themselves).
+
+**With that one fix, real, verified-live results:**
+
+```
+$ file ntoskrnl/ntoskrnl.exe hal/halx86/hal.dll boot/freeldr/freeldr/freeldr.sys
+ntoskrnl.exe: PE32+ executable for MS Windows 5.01 (native), x86-64, 20 sections
+hal.dll:      PE32+ executable for MS Windows 5.01 (native), x86-64, 17 sections
+freeldr.sys:  (240640 bytes)
+```
+
+The real ReactOS **kernel** (`ntoskrnl.exe`, 13MB), **HAL**
+(`hal.dll`, 2.2MB), and **bootloader** (`freeldr.sys`, 240KB) all
+compiled and linked clean from a real, current ReactOS source checkout
+— the first time this project has built any part of ReactOS itself
+from source, on any host, in this project's history. The full
+`ninja bootcd` desktop-ISO target was tried first and hit a second,
+unrelated, genuinely ReactOS-desktop-shell-specific issue
+(`dll/shellext/shellbtrfs` — a Btrfs shell extension with an ambiguous
+`std::to_wstring` overload under this newer libstdc++ — completely
+irrelevant to ROS-NTCELL's own no-shell scope) — rather than chase
+bugs in components ROS-NTCELL explicitly doesn't want, the build was
+retargeted directly at `ninja ntoskrnl hal boot/freeldr/freeldr/
+freeldr.sys`, the actual pieces this phase's success criterion needs,
+which is both more correct and faster than the full desktop build.
+
+**What this does not yet prove:** these three binaries have not been
+assembled into an actual bootable image (a minimal boot CD/floppy
+layout, a stripped registry hive, and whatever minimal driver set
+`freeldr`/`ntoskrnl` need to reach a usable state — real, separate,
+unattempted follow-up), and none of the four Phase 14 drivers were
+built against this new kernel tree specifically (still built against
+the standalone mingw-w64 DDK path, unchanged). The task items below are
+retained, updated to reflect what's actually left:
+
+- [x] ~~Stand up the RosBE cross-toolchain~~ — **not needed**, checked
+      directly: the stock mingw-w64 toolchain this project already uses
+      everywhere else builds ReactOS's kernel/HAL/bootloader clean, with
+      one narrow, documented GCC-14-compatibility flag.
+- [ ] Assemble `ntoskrnl.exe`/`hal.dll`/`freeldr.sys` (now real, built
+      artifacts, not blocked on a toolchain) into an actual bootable
+      **ROS-NTCELL** image (HAL/ntoskrnl/registry/PnP/IoMgr/ObMgr/MM/
+      driver-loader/bridge-transport only — no Explorer/Winlogon/GDI
+      shell) — the real remaining work, now a boot-image-assembly
+      problem rather than a "can we even compile this" problem.
+- [ ] Once a bootable ROS-NTCELL image exists, revisit whether
+      `driver/ntbridge/reactos/ntbridge_pnp.c`'s two flagged bugs
+      (missing wait-for-lower-IRP-completion; `IoCreateDevice` from
+      DISPATCH_LEVEL) are easier to catch/fix building inside the full
+      ReactOS source tree (e.g. against its own driver-verifier
+      tooling) than the standalone mingw-w64 build this project uses
+      today — not required, but worth checking now that the option
+      exists.
 
 **Success criterion:** a ReactOS driver cell boots from a ROS-NTCELL
-image built by this project's own RosBE toolchain, with no desktop shell
+image built by this project's own toolchain, with no desktop shell
 present — the actual "minimal bootable ReactOS image" Phase 4's success
 criterion originally called for, not the stock ISO stand-in it settled
-for.
+for. **Substantially closer, not yet met** — the compile-time blocker
+that gated this whole phase is gone; what remains is boot-image
+assembly, a real but bounded and now-unblocked task.
 
 ---
 
@@ -1643,6 +1702,55 @@ second, distinct, not-yet-root-caused issue (the guest's UI language
 changing mid-run) that this specific fix didn't resolve — see
 `driver/vsdev/README.md` for the precise, unresolved account rather
 than an overclaimed "fixed."
+
+### The real Add Hardware Wizard, actually reached — and a genuine, reproducible hang inside it
+
+A later pass, in the same session, pushed further than any previous
+attempt: with `vsdev.sys`/`vsdev.inf` on the boot floppy (via
+`write-fat12-floppy.py`) and a real ReactOS desktop reached, tried the
+System Properties → Hardware tab's own "Device Manager..." and
+"Hardware Wizard..." buttons first — **neither responds to activation**
+(clicked-then-focused via screendump-confirmed focus rectangles,
+`ret` sent, no window ever opened, on this exact ReactOS nightly
+build 2669) — a real finding in its own right, distinct from the
+already-documented desktop-icon-launch flake, since this is a
+different control (a property-sheet push button, not a desktop icon)
+failing the same "focuses, never activates" way.
+
+Bypassing System Properties entirely and invoking `hdwwiz.cpl` directly
+via `sendkey meta_l,r` (Win+R) **worked** — a real, genuine "Add
+Hardware Wizard" window opened, rendering correctly (Welcome page,
+real wizard chrome, `Next >` pre-focused). Pressing `ret` advanced it
+past the Welcome page into a real "Please wait while the wizard
+searches..." page — genuine live PnP device enumeration, the deepest
+point any pass of this project has reached into a real Windows/ReactOS
+hardware-install flow.
+
+**That search phase then hung** — confirmed genuinely stuck, not just
+slow: three separate screendumps taken roughly 3, 8, and 13 in-guest
+minutes apart all show the identical "searching" spinner with the
+in-guest clock having visibly advanced between each — no completion, no
+error, no progress indicator change. Not root-caused this pass (the
+QEMU instance was killed cleanly rather than left running indefinitely
+in the interest of the session's own resource budget) — a real
+candidate for either a genuine upstream ReactOS bug in this exact
+nightly's hardware-detection code under QEMU/TCG's specific virtual
+chipset, or a slow/blocking device probe that would eventually
+complete given enough wall-clock time (not distinguished between the
+two). Screenshots from this run were not preserved (cleaned up before
+this account was written) — real, separate follow-up: reproduce with
+screenshots kept, and let the search run considerably longer (an hour+)
+once before concluding it's a true hang rather than "very slow."
+
+**Net effect on Phase 14:** the automation-technique blocker this
+phase's own first task item names is now substantially resolved (Win+R
+reliably reaches both a console and, via `.cpl` files, Control Panel
+applets that a broken UI button can't block) — but a new, real,
+ReactOS-side blocker was found in its place, one layer deeper than
+where this phase started. None of the four target drivers were
+actually installed this pass; the wizard never got past its own
+hardware-search phase to reach the "Have Disk" step where
+`vsdev.inf`/`ntbridge.inf`/etc. would actually get used.
 
 ---
 
