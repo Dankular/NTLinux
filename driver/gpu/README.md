@@ -98,6 +98,57 @@ compiler flag combination, a `#pragma pack` this project's probe is
 missing, or a genuine, deeper incompatibility — not attempted in this
 pass.
 
+## A real GPU + real MSVC, checked directly (later session)
+
+A later pass ran on a Windows host with a genuine discrete GPU (NVIDIA
+GeForce RTX 4060, WDDM 3.1, confirmed via `Get-CimInstance
+Win32_VideoController` — `Status: OK`, real driver 32.0.15.9186) and a
+real, already-installed MSVC toolchain (Visual Studio 2022 Professional,
+`cl.exe` 14.44.35207). Used that to check the open struct-layout
+question above two ways, rather than leaving it as "unresolved, GCC
+disagrees with something":
+
+1. **Cross-compiler comparison.** `msvc-wddm-probe.c` (same directory)
+   is a near-identical counterpart to `wddm-probe.c`, compiled with the
+   real `cl.exe` against the same unmodified WDK 10.0.22621.0 headers —
+   `/kernel` mode, `vcvarsall.bat x64` environment. Its
+   `static_assert(FIELD_OFFSET(DXGK_CHILD_CAPABILITIES, HpdAwareness)
+   == 12, ...)` — the exact assert that fails under this project's
+   mingw-w64 toolchain — **compiles clean** (`CL_ERRORLEVEL=0`). Since
+   MSVC is the compiler these headers are authored and validated
+   against, this confirms the header's own layout expectation is
+   internally correct, and pins the mingw-w64 failure specifically to
+   GCC/mingw-w64's own struct-layout computation for this type — not a
+   header defect. `-mms-bitfields` was already tried on the GCC side
+   (see above) and does not fix it; the precise mechanical reason GCC
+   diverges here is still open, and would need a real side-by-side
+   mingw-w64 compile on the same host to chase further (mingw-w64/GCC
+   is confirmed absent from this particular host; installing one via
+   the `choco` package manager already present was deliberately not
+   done unprompted — a new system toolchain install is a more
+   consequential, unrequested change than this pass's scope called for).
+2. **Whether real hardware makes the *live* struct layout checkable at
+   all, not just the header text.** It doesn't, checked rather than
+   assumed: grepped the WDK's full public usermode
+   `D3DKMTQueryAdapterInfo` query-type enum (`d3dkmthk.h`,
+   `KMTQAITYPE_*`, 60+ real entries, all of them) end to end.
+   `DXGK_CHILD_CAPABILITIES` is a kernel-mode-only DXGKRNL↔miniport
+   contract type — no usermode `D3DKMT` escape exposes it. Getting this
+   real driver's actual, live `HpdAwareness` byte offset (as opposed to
+   what the header text asserts it should be) would require loading an
+   actual kernel-mode driver or kernel debugger on this host —
+   correctly treated as out of scope without explicit authorization,
+   not attempted.
+
+Net effect on blocker 2, stated precisely: "the assert fails under our
+toolchain, cause unknown" became "the assert is correct per the
+header's own authoring compiler; the mingw-w64/GCC divergence is real,
+confirmed, and still open in its root cause." Genuine, narrower
+progress — not a resolution. Blockers 1 and 3 (below) are untouched by
+any of this: blocker 3 in particular needs VFIO/IOMMU, a Linux kernel
+facility this Windows host cannot provide regardless of what GPU is
+attached to it.
+
 ## The three blockers, corrected
 
 1. **ReactOS's own WDDM/DXGKRNL support is real but early and 2D-only**

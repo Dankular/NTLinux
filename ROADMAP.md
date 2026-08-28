@@ -1198,6 +1198,60 @@ in for Phase 7's network interface, or `--usb-echo` stood in for Phase
 8's USB bridge. This blocker needs real user hardware to ever attempt,
 in any sandbox shaped like the ones this project has used.
 
+### A real GPU became available this session — what it did and didn't change
+
+This session ran on a Windows host with a genuine, healthy discrete GPU
+(`Get-CimInstance Win32_VideoController`: NVIDIA GeForce RTX 4060, WDDM
+3.1, driver 32.0.15.9186, `Status: OK` — plus a "Parsec Virtual Display
+Adapter," indicating this host is itself remotely operated). Checked
+directly, rather than assumed, what that does and doesn't unblock:
+
+- **Doesn't touch blocker 3.** VFIO/IOMMU passthrough is a Linux kernel
+  facility; this host is Windows. A real GPU being present is not the
+  same as a real *second* GPU behind a Linux VFIO/IOMMU path — the two
+  things blocker 3 needs (a second card, and Linux's VFIO stack) are
+  both still categorically absent here. No regression, no progress on
+  this blocker specifically.
+- **Doesn't touch blocker 1** — ReactOS's own WDDM/DXGKRNL work happens
+  upstream, not in this sandbox, regardless of local hardware.
+- **Did let blocker 2's open question get sharpened with a real,
+  live-run cross-compiler comparison it couldn't get before.** The real
+  MSVC toolchain (Visual Studio 2022 Professional, `cl.exe`
+  14.44.35207) is present on this host. Compiled `driver/gpu/`'s exact
+  probe — the same `dispmprt.h` `static_assert(FIELD_OFFSET(
+  DXGK_CHILD_CAPABILITIES, HpdAwareness) == 12, ...)` that fails under
+  this project's mingw-w64 toolchain — against the same unmodified WDK
+  10.0.22621.0 headers, this time with MSVC (the compiler these headers
+  are authored and validated for). **It compiles clean, `static_assert`
+  and all.** That pins the failure specifically to GCC/mingw-w64's own
+  struct-layout computation for this type diverging from MSVC's — not a
+  header defect (already suspected, now directly confirmed rather than
+  inferred) — while leaving the actual root cause of *why* GCC computes
+  a different offset still open; that would need a real mingw-w64
+  compile on this same host for a true side-by-side (mingw-w64/GCC is
+  confirmed absent from this host, and installing one — feasible via the
+  `choco` package manager already present here — was deliberately not
+  done unprompted, as a new system toolchain install is a more
+  consequential, unrequested change than this pass's scope).
+- **Checked, and confirmed closed off: this struct's live *runtime*
+  data is still unreachable, even with real hardware.** Grepped the
+  WDK's full public usermode `D3DKMTQueryAdapterInfo` query-type enum
+  (`d3dkmthk.h`, `KMTQAITYPE_*`, 60+ real entries) end to end —
+  `DXGK_CHILD_CAPABILITIES` is a kernel-mode-only DXGKRNL↔miniport
+  contract type with no usermode escape exposing it. Getting this real
+  driver's actual live `HpdAwareness` byte offset (as opposed to what
+  the header text says it should be) would require loading an actual
+  kernel-mode driver or kernel debugger on this host — correctly out of
+  scope without explicit authorization, not attempted.
+
+Net effect: real GPU hardware turned "the assert fails under our
+toolchain, cause unknown" into "the assert is correct per the header's
+authoring compiler; the mingw-w64 divergence is real, confirmed
+GCC-side, and still open in its root cause" — genuine, narrower
+progress on blocker 2, with blockers 1 and 3 unchanged. See
+`driver/gpu/README.md` for the full account, including the exact probe
+file and build invocation.
+
 ### What this means for "in full"
 
 The three blockers are still independent — fixing one doesn't unblock
@@ -1205,10 +1259,15 @@ the others — but they're no longer equally unresolved. Blocker 2 moved
 from "hard toolchain gap" to "real, fetchable, mostly-compiling, with
 one genuine unresolved ABI question" — the one blocker this pass
 actually made concrete progress on, verified live rather than just
-re-described. Blockers 1 (ReactOS's own early/2D-only WDDM) and 3 (no
-VFIO/IOMMU hardware in any sandbox this project has run in) are
-unchanged and still real. `docs/DECISIONS.md` ADR-0003 carries the same
-correction. Revisit this phase once blocker 3 lifts (real hardware with
+re-described. A later pass, run on a host with a real GPU and a real
+MSVC toolchain, narrowed that same open question further (see "A real
+GPU became available this session" above) without closing it — still a
+genuine, unresolved cross-compiler ABI question, now confirmed
+GCC/mingw-w64-side rather than a header defect. Blockers 1 (ReactOS's
+own early/2D-only WDDM) and 3 (no VFIO/IOMMU hardware in any sandbox
+this project has run in) are unchanged and still real. `docs/DECISIONS.md`
+ADR-0003 carries the same correction. Revisit this phase once blocker 3
+lifts (real hardware with
 VFIO/IOMMU available) — at that point blocker 2's remaining ABI-layout
 question becomes real, concrete gating work with an actual starting
 point (`driver/gpu/wddm-probe.c`), not a re-investigation from zero, and
