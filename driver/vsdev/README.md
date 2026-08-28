@@ -149,10 +149,43 @@ behavior never changed.
   architecturally correct (the driver itself never changed), but is not
   currently re-reproducible by `run-test.sh` unattended against a
   current nightly** — a real regression in the test's own environment
-  dependency, not in `vsdev.sys`. Real, separate follow-up: either find
-  a more robust way to open a console (e.g. Win+R "Run" dialog, if that
-  proves more reliable than desktop icon focus) or diagnose the icon-
-  launch failure directly with ReactOS's own debug output.
+  dependency, not in `vsdev.sys`.
+
+  **Follow-up, same pass: Win+R fixes the console-launch step itself,
+  verified live — but exposed a second, separate flake.** Tested
+  directly: `sendkey meta_l,r` (QEMU's qcode for the left Windows/Super
+  key, chorded with `r`) reliably opens ReactOS's "Run" dialog, and
+  typing `cmd` + Enter reliably opens a real
+  `X:\reactos\System32\cmd.exe` window — confirmed with a screendump
+  showing the actual console, repeatable, no flakiness observed across
+  several isolated tries. `run-test.sh` now uses this instead of the
+  icon-search step. Running the *full* automated script end-to-end
+  still didn't reach PASS on the next attempt, though — a **different,
+  newly-found issue**: the final screendump showed the desktop's own
+  UI text had switched to Danish ("Mine Dokumenter" instead of "My
+  Documents", language indicator "DA") after `dismiss-dialog` ran.
+  `dismiss-dialog` sends repeated `ret` keypresses while polling for the
+  dialog to close; if one of those lands while the dialog's language
+  *combobox* (not the Next button) happens to have focus, Enter appears
+  to cycle its selection instead of accepting the dialog — changing the
+  guest's locale mid-run, which likely also broke the Win+R step that
+  followed it in that same run (not confirmed which part specifically).
+  Tried the fix suggested above (`dismiss-dialog` gained
+  `--click-x`/`--click-y` to click the Next button by coordinate
+  instead of blindly sending `ret` — real change, kept, see
+  `qmp_console.py`) and re-ran: **the language still switched to
+  Danish**, ruling out "blind Enter landing on the wrong control" as
+  the actual cause — it survives clicking a fixed coordinate too. Best
+  remaining theory, not confirmed: this build shows a *second* dialog
+  right after the language one (this file's own code comment already
+  suspected this, from an unrelated repaint-flicker fix), plausibly a
+  keyboard-layout confirmation with its own combobox positioned near
+  the same on-screen coordinate — repeated polls clicking that same
+  fixed spot could be cycling *that* dialog's list instead. Not
+  confirmed with intermediate screenshots this pass (budget) — real,
+  separate follow-up: capture a screendump on every dismiss-dialog poll
+  (not just the final one) to see exactly what's on screen when the
+  language actually changes.
 - **PnP-triggered load never exercised.** `vsdev.inf` + `AddDevice`
   exist and are believed correct (same shape as the legacy path that
   *did* get verified, sharing `VsdevCreateDeviceObject`), but a real

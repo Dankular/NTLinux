@@ -1604,6 +1604,33 @@ install (not the legacy/manual shortcuts already verified) inside a
 real, booted ReactOS kernel, with `IRP_MN_START_DEVICE` observed firing
 from the real PnP manager in each case.
 
+### Real progress on the automation itself, this phase's actual first blocker
+
+The first task item above — driving ReactOS's UI live via QMP-driven
+synthetic input — got real, live-verified progress on a later pass, on
+the real Windows/QEMU host used throughout this ROADMAP's later
+sessions. `driver/cell/launcher/qmp_console.py`'s `sendkey meta_l,r`
+(QEMU's qcode for the left Windows/Super key, chorded with `r`) reliably
+opens ReactOS's "Run" dialog; typing `cmd` + Enter reliably opens a
+real `X:\reactos\System32\cmd.exe` console window — confirmed with a
+real screendump, repeatable across isolated tries with no flakiness
+observed. This is a materially more robust way to reach a console than
+the "click empty desktop + jump to an icon by its first letter"
+technique `driver/vsdev/run-test.sh` previously used (see
+`driver/vsdev/README.md`'s "Known gaps" for that technique's own
+real, reproducible failure against current ReactOS nightlies) — a real
+building block for driving Device Manager's Add Hardware wizard the
+same way, though that specific wizard flow was not attempted this pass.
+A second, real, narrow fix went into `qmp_console.py`'s
+`dismiss-dialog` at the same time (`--click-x`/`--click-y`: click a
+known button coordinate instead of blindly sending `ret`, so a stray
+keypress can't land on the wrong control) — kept because it's a real
+improvement in principle, though a full automated run still hit a
+second, distinct, not-yet-root-caused issue (the guest's UI language
+changing mid-run) that this specific fix didn't resolve — see
+`driver/vsdev/README.md` for the precise, unresolved account rather
+than an overclaimed "fixed."
+
 ---
 
 ## Phase 15 — WireGuard network security (nearest-server ProtonVPN) 🟨 (server-selection logic implemented and verified live; tunnel bring-up not attempted in this project's original sandbox — but a later pass on a real, unrestricted Linux host confirmed the kernel-module blocker below is a sandbox limitation, not architectural — see "A real host without that restriction" further down)

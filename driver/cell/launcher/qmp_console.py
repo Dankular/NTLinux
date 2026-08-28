@@ -16,7 +16,8 @@ Usage:
   qmp_console.py <qmp-socket> type <text>
   qmp_console.py <qmp-socket> click <x-fraction> <y-fraction>
   qmp_console.py <qmp-socket> dismiss-dialog <x-fraction> <y-fraction> \\
-      <r> <g> <b> [--tolerance N] [--timeout SECONDS] [--interval SECONDS]
+      <r> <g> <b> [--tolerance N] [--timeout SECONDS] [--interval SECONDS] \\
+      [--click-x X --click-y Y]
 
 <qmp-socket> is either a filesystem path to a QMP unix socket (the
 original, Linux-sandbox-verified form) or "tcp:HOST:PORT". The tcp:
@@ -165,12 +166,24 @@ def click(sock, x_frac, y_frac):
     ]})
 
 
-def dismiss_dialog(sock, x_frac, y_frac, target_rgb, tolerance, timeout_s, interval_s):
+def dismiss_dialog(sock, x_frac, y_frac, target_rgb, tolerance, timeout_s, interval_s,
+                    click_x_frac=None, click_y_frac=None):
     """Poll until the pixel at (x_frac, y_frac) reads as `target_rgb`
     (the known plain-desktop-background color, not the dialog's) for two
-    consecutive polls, sending `ret` on every poll where it doesn't -
-    see the module docstring for why this replaces a fixed sleep+ret
-    sequence. Returns True once settled, False on timeout.
+    consecutive polls, interacting with the dialog on every poll where
+    it doesn't - see the module docstring for why this replaces a fixed
+    sleep+ret sequence. Returns True once settled, False on timeout.
+
+    click_x_frac/click_y_frac (optional): if given, click that point
+    instead of blindly sending `ret`. Real, narrow fix for a real bug
+    found live: sending `ret` on every poll can land while a *different*
+    control than the intended button has keyboard focus (e.g. the
+    dialog's own language combobox) - Enter there cycles that control's
+    selection instead of accepting the dialog, observed to actually
+    change the guest's UI language mid-run. Clicking a known button
+    coordinate directly can't misfire onto the wrong control the same
+    way. Kept optional (defaults to the old `ret` behavior) so any other
+    caller with a differently-shaped dialog keeps working unchanged.
 
     Real bug found only by actually running this against a full,
     unattended boot (not caught by manual step-by-step testing, which
@@ -222,7 +235,10 @@ def dismiss_dialog(sock, x_frac, y_frac, target_rgb, tolerance, timeout_s, inter
             else:
                 consecutive_matches = 0
                 dialog_ever_seen = True
-                send_keys(sock, ["ret"])
+                if click_x_frac is not None and click_y_frac is not None:
+                    click(sock, click_x_frac, click_y_frac)
+                else:
+                    send_keys(sock, ["ret"])
             time.sleep(interval_s)
         return False
     finally:
@@ -252,13 +268,17 @@ if __name__ == "__main__":
     elif cmd == "dismiss-dialog":
         x_frac, y_frac = float(sys.argv[3]), float(sys.argv[4])
         rgb = (int(sys.argv[5]), int(sys.argv[6]), int(sys.argv[7]))
-        opts = {"--tolerance": 20, "--timeout": 180, "--interval": 5}
+        opts = {"--tolerance": 20, "--timeout": 180, "--interval": 5,
+                "--click-x": None, "--click-y": None}
         rest = sys.argv[8:]
         for i in range(0, len(rest) - 1, 2):
-            if rest[i] in opts:
+            if rest[i] in ("--click-x", "--click-y"):
+                opts[rest[i]] = float(rest[i + 1])
+            elif rest[i] in opts:
                 opts[rest[i]] = int(rest[i + 1])
         ok = dismiss_dialog(s, x_frac, y_frac, rgb, opts["--tolerance"],
-                             opts["--timeout"], opts["--interval"])
+                             opts["--timeout"], opts["--interval"],
+                             click_x_frac=opts["--click-x"], click_y_frac=opts["--click-y"])
         if not ok:
             print(f"qmp_console.py: dismiss-dialog timed out after {opts['--timeout']}s "
                   f"still not seeing the expected background color", file=sys.stderr)

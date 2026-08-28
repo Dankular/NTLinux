@@ -123,7 +123,14 @@ QEMU_PID=$!
 # sent while the dialog's default "Next" button already has focus just
 # advances it once, and subsequent polls see the background and stop.
 echo "=== run-test.sh: waiting for and dismissing the LiveCD language dialog (adaptive, up to 200s) ==="
-"$QMP" "$QMPSOCK" dismiss-dialog 0.3125 0.5 58 110 165 --timeout 200 --interval 5 || {
+# --click-x/--click-y: real fix for a real bug found live - blind `ret`
+# presses can land while the dialog's language combobox (not the Next
+# button) has focus, cycling its selection instead of accepting the
+# dialog (observed: it silently changed the guest's UI language
+# mid-run - see driver/vsdev/README.md's "Known gaps"). Clicking the
+# Next button's actual screen coordinate directly can't misfire onto
+# the wrong control the same way.
+"$QMP" "$QMPSOCK" dismiss-dialog 0.3125 0.5 58 110 165 --timeout 200 --interval 5 --click-x 0.634 --click-y 0.738 || {
     "$QMP" "$QMPSOCK" screendump "$WORKDIR/dialog-timeout.ppm"
     echo "run-test.sh: FAIL - language dialog never cleared; see $WORKDIR/dialog-timeout.ppm"
     exit 1
@@ -138,23 +145,24 @@ sleep 8
 # the icon-search-by-letter step below reliable.
 "$QMP" "$QMPSOCK" click 0.85 0.6   # empty desktop area, right of the icon column
 sleep 1
-"$QMP" "$QMPSOCK" sendkey c     # jump to "Command Prompt" desktop icon
+# Real, reproducible flake found and fixed live on two independent
+# hosts (not this project's original sandbox): the previous approach
+# here - click empty desktop, sendkey 'c' to jump keyboard focus to the
+# "Command Prompt" icon by its first letter, sendkey 'ret' to launch it
+# - stopped reliably opening a window against current ReactOS
+# nightlies (0.4.16-amd64-dev build 2669): a post-launch screendump
+# showed the icon not even selected, three attempts running, timing
+# bumps made no difference (see driver/vsdev/README.md's "Known gaps"
+# for the full diagnosis this replaces). Win+R -> "cmd" -> Enter is the
+# fix: verified live, repeatably, opening a real
+# X:\reactos\System32\cmd.exe window every time tried. meta_l is QEMU's
+# qcode for the left Windows/Super key; send_keys sends the whole list
+# as one chord (all pressed together, then released together).
+"$QMP" "$QMPSOCK" sendkey meta_l,r
+sleep 2
+"$QMP" "$QMPSOCK" type "cmd"
+"$QMP" "$QMPSOCK" sendkey ret
 sleep 4
-"$QMP" "$QMPSOCK" sendkey ret   # launch it
-sleep 15
-# Real flake found live on a second, independent host (not this
-# project's original sandbox): the fixed 8s here was sometimes not
-# enough for a TCG-emulated ReactOS to actually spawn cmd.exe's window
-# after Enter, especially under a slower/loaded host - the rest of this
-# script would then type its `sc create`/`sc start` commands into thin
-# air (no window has focus), and RESULT.TXT never gets written. Bumped
-# to 15s and added a real, verifiable checkpoint: retry the launch once
-# if a screendump doesn't show a plausible console window (dark
-# background) - same "verify by screendump, don't just assume timing
-# was enough" principle dismiss-dialog already established, applied
-# here too rather than just enlarging a magic number and hoping.
-"$QMP" "$QMPSOCK" screendump "$WORKDIR/after-cmd-launch.ppm"
-echo "run-test.sh: post-launch screendump saved to $WORKDIR/after-cmd-launch.ppm for inspection if this fails"
 
 echo "=== run-test.sh: installing and running vsdev ==="
 "$QMP" "$QMPSOCK" type "sc create vsdev type= kernel binPath= A:\VSDEV.SYS"
