@@ -3,10 +3,10 @@
 Versioned wire protocol definitions for the ntdll <-> ntd request queues (ARCHITECTURE.md section 5, Rule 12: cross-boundary protocols must be versioned).
 
 **Owner:** NTLinux
-**Status:** Implemented and verified — protocol v2 (Phase 3)
+**Status:** Implemented and verified — protocol v3 (Phase 12)
 
 `ntabi_protocol.h` defines the wire format: a POSIX shared-memory segment
-(`/ntlinux-ntabi-v2`) holding a submission ring plus a fixed slot table,
+(`/ntlinux-ntabi-v3`) holding a submission ring plus a fixed slot table,
 each slot carrying one request/response pair and its own completion
 semaphore — real blocking waits, no polling (Rule 13). `NTABI_PROTOCOL_VERSION`
 is embedded directly in the segment *name* (not just checked as a field
@@ -25,8 +25,24 @@ mapped client-side), I/O Completion ports, Process objects (signaled on
 exit, via `pidfd`) — and **replaces the flat handle space with real
 per-process handle tables** (keyed by client pid). The flat name→object
 map remains — still a documented simplification, see
-`ntd/namespace/README.md`. Thread objects and APCs are explicitly not
-covered — see `ROADMAP.md` Phase 3's "known gap".
+`ntd/namespace/README.md`.
+
+**v3 (Phase 12):** adds Thread objects (`OpenThread`, signaled when the
+*specific* target thread exits — not the whole process — detected via
+`/proc/<pid>/task/<tid>` polling, since `pidfd_open(2)` only accepts
+thread-group-leader pids, not arbitrary TIDs) and APC support
+(`QueueApc` + a new `alertable` flag on `WAIT_SINGLE` — a pending APC on
+the calling thread short-circuits an alertable wait with
+`NTABI_STATUS_USER_APC` before the wait is even attempted against the
+target object, matching "delivered at the next alertable wait" per
+ROADMAP.md Phase 12's task text). New `client_tid` field on the shared
+slot (alongside the existing `client_pid`) identifies *which* thread of a
+multi-threaded client issued a request — needed so a thread's own
+alertable wait checks its own pending APC queue, not some other thread's.
+`SuspendThread`/`ResumeThread` add real count *accounting* only (correct
+increment/clamp-at-0/decrement, matching NT's return-value convention) —
+not real CPU-execution freezing, which needs `ptrace` and isn't attempted
+here.
 
 A real bug was found and fixed by actually running the daemon, not by
 inspection: `#define NTABI_PROTOCOL_VERSION 2u` (the `u` unsigned-literal

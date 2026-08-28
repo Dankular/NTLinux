@@ -14,6 +14,15 @@
 #include <time.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+
+/* gettid() has a glibc wrapper only since glibc 2.30; call the raw syscall
+ * instead, matching ntd.c's own pidfd_open pattern, so this builds against
+ * older glibc too (ADR-0001: host-agnostic, not tied to this dev sandbox's
+ * glibc version). */
+static pid_t ntabi_gettid(void) {
+    return (pid_t)syscall(SYS_gettid);
+}
 
 struct ntabi_conn {
     ntabi_shm_t *shm;
@@ -72,6 +81,7 @@ static ntabi_status_t submit(ntabi_conn_t *conn, ntabi_request_t *req,
     ntabi_slot_t *slot = &shm->slots[idx];
     slot->in_use = 1;
     slot->client_pid = getpid();
+    slot->client_tid = ntabi_gettid();
     slot->req = *req;
     memset(&slot->resp, 0, sizeof(slot->resp));
 
@@ -343,6 +353,69 @@ ntabi_status_t ntabi_open_process(ntabi_conn_t *c, int32_t target_pid, int32_t *
     return st;
 }
 
+ntabi_status_t ntabi_open_thread(ntabi_conn_t *c, int32_t target_pid, int32_t target_tid,
+                                  int32_t *out_handle) {
+    ntabi_request_t req = {0};
+    req.opcode = NTABI_OP_OPEN_THREAD;
+    req.target_pid = target_pid;
+    req.target_tid = target_tid;
+    ntabi_response_t resp;
+    ntabi_status_t st = submit(c, &req, &resp);
+    if (out_handle) *out_handle = resp.handle;
+    return st;
+}
+
+ntabi_status_t ntabi_queue_apc(ntabi_conn_t *c, int32_t thread_handle,
+                                uint64_t routine, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
+    ntabi_request_t req = {0};
+    req.opcode = NTABI_OP_QUEUE_APC;
+    req.handle = thread_handle;
+    req.apc_routine = routine;
+    req.apc_arg1 = arg1;
+    req.apc_arg2 = arg2;
+    req.apc_arg3 = arg3;
+    ntabi_response_t resp;
+    return submit(c, &req, &resp);
+}
+
+ntabi_status_t ntabi_suspend_thread(ntabi_conn_t *c, int32_t thread_handle, int32_t *out_prev_count) {
+    ntabi_request_t req = {0};
+    req.opcode = NTABI_OP_SUSPEND_THREAD;
+    req.handle = thread_handle;
+    ntabi_response_t resp;
+    ntabi_status_t st = submit(c, &req, &resp);
+    if (out_prev_count) *out_prev_count = resp.prev_suspend_count;
+    return st;
+}
+
+ntabi_status_t ntabi_resume_thread(ntabi_conn_t *c, int32_t thread_handle, int32_t *out_prev_count) {
+    ntabi_request_t req = {0};
+    req.opcode = NTABI_OP_RESUME_THREAD;
+    req.handle = thread_handle;
+    ntabi_response_t resp;
+    ntabi_status_t st = submit(c, &req, &resp);
+    if (out_prev_count) *out_prev_count = resp.prev_suspend_count;
+    return st;
+}
+
+ntabi_status_t ntabi_wait_single_alertable(ntabi_conn_t *c, int32_t handle, int32_t timeout_ms,
+                                            ntabi_apc_info_t *out_apc) {
+    ntabi_request_t req = {0};
+    req.opcode = NTABI_OP_WAIT_SINGLE;
+    req.handle = handle;
+    req.timeout_ms = timeout_ms;
+    req.alertable = 1;
+    ntabi_response_t resp;
+    ntabi_status_t st = submit(c, &req, &resp);
+    if (st == NTABI_STATUS_USER_APC && out_apc) {
+        out_apc->routine = resp.apc_routine;
+        out_apc->arg1 = resp.apc_arg1;
+        out_apc->arg2 = resp.apc_arg2;
+        out_apc->arg3 = resp.apc_arg3;
+    }
+    return st;
+}
+
 const char *ntabi_status_string(ntabi_status_t status) {
     switch (status) {
         case NTABI_STATUS_SUCCESS: return "SUCCESS";
@@ -355,6 +428,8 @@ const char *ntabi_status_string(ntabi_status_t status) {
         case NTABI_STATUS_LIMIT_REACHED: return "LIMIT_REACHED";
         case NTABI_STATUS_INTERNAL_ERROR: return "INTERNAL_ERROR";
         case NTABI_STATUS_PROCESS_NOT_FOUND: return "PROCESS_NOT_FOUND";
+        case NTABI_STATUS_THREAD_NOT_FOUND: return "THREAD_NOT_FOUND";
+        case NTABI_STATUS_USER_APC: return "USER_APC";
         default: return "UNKNOWN";
     }
 }

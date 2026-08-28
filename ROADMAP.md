@@ -1228,52 +1228,103 @@ and should have been.
 
 ---
 
-## Phase 12 — ntdll integration & remaining NT object types ⬜
+## Phase 12 — ntdll integration & remaining NT object types 🟨 (Thread objects + APC support done and verified; real Wine `ntdll` integration remains genuinely out of reach in this sandbox)
 
-Two things bundled together deliberately, not because they're the same
-kind of work, but because the second is blocked on the first: real Wine
-`ntdll` integration (Phase 2's original, still-open "known gap" — patching
-Wine's actual sync implementation, `dlls/ntdll/unix/sync.c` upstream, to
-call into `libntabi` for some operations, then rebuilding Wine from source
-and validating against Wine's own test suite), and the two NT object types
-Phase 3 explicitly deferred pending exactly that integration: **Thread
-objects** and **APC support**. Both need a real per-thread execution
-context that only exists once real Windows/Wine thread creation routes
-through `ntabi` — there's no honest way to prototype "wait on a thread
-handle" or "queue an APC to a thread" against a thread `ntd` never created
-and has no execution context for.
+Two things bundled together, not because they're the same kind of work,
+but because this phase's original text assumed the second was blocked on
+the first: real Wine `ntdll` integration (Phase 2's original, still-open
+"known gap" — patching Wine's actual sync implementation,
+`dlls/ntdll/unix/sync.c` upstream, to call into `libntabi` for some
+operations, then rebuilding Wine from source and validating against
+Wine's own test suite), and the two NT object types Phase 3 explicitly
+deferred: **Thread objects** and **APC support**.
+
+**A premise here turned out to be wrong, corrected by actually building
+it rather than left standing:** this phase originally claimed both object
+types "need a real per-thread execution context that only exists once
+real Windows/Wine thread creation routes through `ntabi`" — but that's
+the same assumption Phase 3's own Process objects already disproved for
+processes: `OpenProcess`+`pidfd` works for *any* permitted pid, not just
+one `ntd` itself created, because it observes real Linux process state
+from the outside rather than needing to own the process's creation.
+Threads generalize the exact same way — `/proc/<pid>/task/<tid>` observes
+a real Linux thread's liveness from the outside too, no Wine involvement
+needed, no synthetic stand-in. Once that was tried, Thread objects and
+APC queueing/delivery timing turned out to be fully buildable and
+testable against real Linux threads today, independent of the (still
+genuinely blocked) Wine `ntdll` patching work.
 
 **Task breakdown:**
 
 - [ ] Patch Wine's `ntdll` to route selected sync operations (the ones
       `ntabi`/`ntd` already implement — Event/Mutant/Semaphore/Section/
-      I/O Completion port/Process wait) through `libntabi` instead of
-      wineserver. Requires a real Wine source checkout and full build
+      I/O Completion port/Process/Thread wait) through `libntabi` instead
+      of wineserver. Requires a real Wine source checkout and full build
       (30-60+ minutes, gigabytes of dependencies — out of reach in this
-      sandbox so far, same limitation noted in Phase 2).
+      sandbox so far, same limitation noted in Phase 2 — genuinely not
+      attempted, unlike the item below).
 - [ ] Validate against Wine's own test suite (`dlls/ntdll/tests/`,
       `dlls/kernel32/tests/` sync-related suites) — passing is the bar,
-      not just "it links."
-- [ ] Thread objects: create/open, wait-for-thread-exit semantics,
-      suspend count tracking — real semantics against a real Wine thread,
-      not a synthetic stand-in.
-- [ ] APC support: user-mode and kernel-mode APC queueing and delivery
-      timing (queued at `NtQueueApcThread`, delivered at the next
-      alertable wait or user-mode APC dispatch) — this is the item most
-      dependent on real thread execution context existing first; don't
-      attempt it before the thread-object work above lands.
+      not just "it links." Blocked on the item above.
+- [x] **Thread objects** (`ntd/ntd.c`, `ntabi` protocol v3): `OpenThread`
+      on a real `(pid, tid)`, signaled when *that specific* Linux thread
+      exits — detected via `/proc/<pid>/task/<tid>` polling on `ntd`'s
+      regular tick, not `pidfd_open` (which only accepts
+      thread-group-leader pids, rejecting arbitrary TIDs with `EINVAL`).
+      An explicit `OpenThread` on a thread that was never seen checks
+      liveness first and returns `NTABI_STATUS_THREAD_NOT_FOUND`; the
+      same underlying object is shared between an explicit `OpenThread`
+      by one process and a thread's own implicit "self" lookup during its
+      own alertable wait (both funnel through the same
+      `find_thread_object`/`find_or_create_thread_object` helpers, keyed
+      by `(pid, tid)`) — required for cross-process `QueueApc` to land on
+      the object the target thread actually checks.
+      `SuspendThread`/`ResumeThread` add real integer *count accounting*
+      (correct increment/clamp-at-0/decrement, matching NT's
+      report-the-previous-count return convention) — stated precisely as
+      **not** freezing the target thread's real CPU execution, which
+      needs `ptrace` (a separate, larger, permission-sensitive
+      undertaking; Yama `ptrace_scope` varies by environment; not
+      attempted here).
+- [x] **APC support**: `QueueApc` appends one packet (routine + 3 args)
+      to a thread's own FIFO queue; a new `alertable` flag on
+      `WAIT_SINGLE` checks the calling thread's *own* pending-APC queue
+      before the wait ever touches the target object — a pending APC
+      short-circuits with `NTABI_STATUS_USER_APC` immediately, the
+      target object untouched even if it was simultaneously satisfiable.
+      Matches this task's own text precisely: "delivered at the next
+      alertable wait." Deliberately lazy (Design A, documented in
+      `ntd/ntd.c`'s top-of-file comment) — does **not** interrupt a wait
+      already blocked when the APC is queued, only checked at the start
+      of a new alertable wait call; a non-alertable wait is never
+      interrupted by a pending APC, verified directly. Models a single
+      flat per-thread APC queue (Rule 2 — don't build more than asked),
+      not the real kernel-mode-vs-user-mode `KAPC`/`UAPC` split.
+- [x] Real tests, same standard as every other object type in `ntd`
+      (`ntabi/tests/test_ntabi.c`, +22 checks, 60/60 passing): two real
+      `pthread` worker threads with different lifetimes in a forked
+      target process, each `OpenThread`'d separately, proving the exit
+      signal is scoped to *that* thread and not its sibling (a Process
+      object couldn't tell these apart — that's the entire reason Thread
+      objects exist); the full APC short-circuit/no-touch/non-alertable-
+      immunity/deferred-delivery timing matrix; `SuspendThread`/
+      `ResumeThread`'s exact previous-count convention and 0-floor clamp.
 - [ ] Measure the two success criteria Phases 2 and 3 both left
       unverifiable for the same reason: reduced wineserver IPC traffic,
       and Wine's test suites staying green with `ntabi`/`ntd` in the loop
-      instead of wineserver for the routed operations.
+      instead of wineserver for the routed operations. Still blocked on
+      the real Wine `ntdll` patch/build above.
 
 **Success criterion:** Wine's own test suites continue passing with
 `ntabi`/`ntd` handling the routed operations instead of wineserver
-(Phase 2's original success criterion, finally measurable) + a measured
-reduction in wineserver IPC traffic (Phase 3's original success
-criterion) + Thread objects and APCs implemented with real semantics,
-verified the same way every other object type in `ntd` was — real
-cross-process tests measuring actual behavior, not stubs.
+(Phase 2's original success criterion) + a measured reduction in
+wineserver IPC traffic (Phase 3's original success criterion) — **both
+still unmet, genuinely blocked on a full Wine source build this sandbox
+doesn't have, no different from Phase 13's RosBE blocker** — + Thread
+objects and APCs implemented with real semantics, verified the same way
+every other object type in `ntd` was: real cross-process tests measuring
+actual behavior, not stubs. **The last part is met.** The first two are
+not, and this phase stays 🟨 rather than ✅ until they are.
 
 ---
 

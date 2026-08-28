@@ -32,6 +32,23 @@
  *   field was checked was a latent read-past-the-mapping risk. Threads
  *   and APCs are explicitly not covered - see ROADMAP.md Phase 3's "known
  *   gap" for why.
+ * v3 (Phase 12): adds Thread objects (OpenThread, signaled on the
+ *   *specific* target thread exiting - not the whole process - detected
+ *   by polling /proc/<pid>/task/<tid> existence, since pidfd_open(2) only
+ *   works on whole thread-group-leader pids, not arbitrary thread IDs)
+ *   and APC queueing/alertable-wait delivery timing (QueueApc + a new
+ *   `alertable` flag on WAIT_SINGLE - a pending APC short-circuits an
+ *   alertable wait with NTABI_STATUS_USER_APC before the wait is even
+ *   attempted against the target object). New `client_tid` on the shared
+ *   slot (alongside the existing `client_pid`) identifies which thread
+ *   issued a request - needed for APC delivery to know "am I the thread
+ *   this APC was queued to". Real, tested semantics; NOT a claim that
+ *   ntd actually executes an APC routine in the target thread's context
+ *   (needs real ntdll/thread-execution integration this prototype
+ *   doesn't have) or that SuspendThread/ResumeThread actually freeze
+ *   real CPU execution (accounting only - real per-thread suspend needs
+ *   ptrace, a separate, larger, permission-sensitive undertaking not
+ *   attempted here). See ntd/README.md and ROADMAP.md Phase 12.
  */
 #ifndef NTLINUX_NTABI_PROTOCOL_H
 #define NTLINUX_NTABI_PROTOCOL_H
@@ -52,7 +69,7 @@
  * noticing "v2u" in its own startup banner, not by inspection. The bare
  * decimal constant still converts to uint32_t/ntabi_shm_t.protocol_version
  * without any warning or ambiguity - the suffix bought nothing here. */
-#define NTABI_PROTOCOL_VERSION 2
+#define NTABI_PROTOCOL_VERSION 3
 
 #define NTABI_STRINGIFY_(x) #x
 #define NTABI_STRINGIFY(x) NTABI_STRINGIFY_(x)
@@ -87,6 +104,11 @@ typedef enum {
     NTABI_OP_POST_COMPLETION,
     NTABI_OP_REMOVE_COMPLETION,
     NTABI_OP_OPEN_PROCESS,
+    /* --- v3 / Phase 12 --- */
+    NTABI_OP_OPEN_THREAD,
+    NTABI_OP_QUEUE_APC,
+    NTABI_OP_SUSPEND_THREAD,
+    NTABI_OP_RESUME_THREAD,
 } ntabi_opcode_t;
 
 /* Loosely mirrors NTSTATUS's role (0 = success, distinct nonzero codes for
@@ -104,6 +126,8 @@ typedef enum {
     NTABI_STATUS_LIMIT_REACHED,
     NTABI_STATUS_INTERNAL_ERROR,
     NTABI_STATUS_PROCESS_NOT_FOUND, /* v2: OpenProcess on a pid that doesn't exist (or already reaped) */
+    NTABI_STATUS_THREAD_NOT_FOUND,  /* v3: OpenThread on a (pid,tid) that doesn't exist */
+    NTABI_STATUS_USER_APC,          /* v3: an alertable wait was interrupted by a pending APC, not satisfied by the waited-on object */
 } ntabi_status_t;
 
 typedef struct {
@@ -126,6 +150,14 @@ typedef struct {
     int64_t  completion_bytes;                /* POST_COMPLETION */
     uint64_t completion_overlapped;           /* POST_COMPLETION */
     int32_t  target_pid;                      /* OPEN_PROCESS */
+
+    /* --- v3 / Phase 12 --- */
+    int32_t  target_tid;      /* OPEN_THREAD: the Linux TID to track, alongside target_pid */
+    int32_t  alertable;       /* WAIT_SINGLE: 1 = an alertable wait - a pending APC on the calling (client_pid, client_tid) thread short-circuits this wait with NTABI_STATUS_USER_APC before the wait is attempted */
+    uint64_t apc_routine;     /* QUEUE_APC */
+    uint64_t apc_arg1;        /* QUEUE_APC */
+    uint64_t apc_arg2;        /* QUEUE_APC */
+    uint64_t apc_arg3;        /* QUEUE_APC */
 } ntabi_request_t;
 
 typedef struct {
@@ -140,11 +172,19 @@ typedef struct {
     int32_t  completion_key;           /* REMOVE_COMPLETION */
     int64_t  completion_bytes;         /* REMOVE_COMPLETION */
     uint64_t completion_overlapped;    /* REMOVE_COMPLETION */
+
+    /* --- v3 / Phase 12 --- */
+    int32_t  prev_suspend_count;       /* SUSPEND_THREAD / RESUME_THREAD: the count *before* this call's adjustment, matching real NT's SuspendThread/ResumeThread return value convention */
+    uint64_t apc_routine;              /* WAIT_SINGLE when status == NTABI_STATUS_USER_APC: the delivered APC's routine/args, dequeued from the calling thread's pending list */
+    uint64_t apc_arg1;
+    uint64_t apc_arg2;
+    uint64_t apc_arg3;
 } ntabi_response_t;
 
 typedef struct {
     _Atomic uint32_t in_use;
     pid_t    client_pid;
+    pid_t    client_tid;   /* v3/Phase 12: which thread of client_pid issued this request - needed for APC delivery ("is this my own pending APC queue?") */
     sem_t    ready;        /* client blocks here until ntd posts the response */
     ntabi_request_t  req;
     ntabi_response_t resp;

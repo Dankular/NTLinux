@@ -23,6 +23,8 @@
 #include <time.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <pthread.h>
 
 static int g_pass = 0, g_fail = 0;
 
@@ -35,6 +37,12 @@ static long elapsed_ms(struct timespec *start) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (now.tv_sec - start->tv_sec) * 1000 + (now.tv_nsec - start->tv_nsec) / 1000000;
+}
+
+/* Raw syscall, matching ntd.c/libntabi.c's own gettid()/pidfd_open()
+ * pattern (no glibc gettid() wrapper before 2.30). */
+static pid_t test_gettid(void) {
+    return (pid_t)syscall(SYS_gettid);
 }
 
 /* --- ntd lifecycle -------------------------------------------------- */
@@ -498,6 +506,183 @@ static void test_process_object(void) {
     ntabi_disconnect(c);
 }
 
+/* --- Thread objects + APCs (Phase 12) ----------------------------------- */
+
+typedef struct { int report_fd; int sleep_ms; } worker_arg_t;
+
+static void *worker_thread(void *arg_) {
+    worker_arg_t *arg = arg_;
+    pid_t tid = test_gettid();
+    /* Report our own kernel tid back to the parent before sleeping, so the
+     * parent can OpenThread this *specific* thread without racing its
+     * creation. */
+    if (write(arg->report_fd, &tid, sizeof(tid)) != sizeof(tid)) { /* best-effort; parent's read() length check catches this */ }
+    usleep((useconds_t)arg->sleep_ms * 1000);
+    return NULL;
+}
+
+/* Proves ntd's Thread-object granularity is real: two threads in the SAME
+ * target process, with different lifetimes, each get their own handle
+ * that signals only on THAT thread's exit - not the process's, and not
+ * its sibling's. A Process object (test_process_object) couldn't tell
+ * these apart; that's the entire reason Thread objects exist. */
+static void test_thread_object(void) {
+    printf("test_thread_object:\n");
+
+    int short_pipe[2], long_pipe[2];
+    if (pipe(short_pipe) != 0 || pipe(long_pipe) != 0) { perror("pipe"); return; }
+
+    pid_t target = fork();
+    if (target == 0) {
+        close(short_pipe[0]);
+        close(long_pipe[0]);
+        worker_arg_t short_arg = { short_pipe[1], 150 };
+        worker_arg_t long_arg  = { long_pipe[1], 600 };
+        pthread_t t1, t2;
+        pthread_create(&t1, NULL, worker_thread, &short_arg);
+        pthread_create(&t2, NULL, worker_thread, &long_arg);
+        pthread_join(t1, NULL);
+        pthread_join(t2, NULL);
+        close(short_pipe[1]);
+        close(long_pipe[1]);
+        _exit(0);
+    }
+    close(short_pipe[1]);
+    close(long_pipe[1]);
+
+    pid_t short_tid = 0, long_tid = 0;
+    ssize_t n1 = read(short_pipe[0], &short_tid, sizeof(short_tid));
+    ssize_t n2 = read(long_pipe[0], &long_tid, sizeof(long_tid));
+    close(short_pipe[0]);
+    close(long_pipe[0]);
+    CHECK(n1 == (ssize_t)sizeof(short_tid) && n2 == (ssize_t)sizeof(long_tid) && short_tid != long_tid,
+          "got two distinct real kernel tids for the target's two worker threads (%d, %d)",
+          (int)short_tid, (int)long_tid);
+
+    ntabi_conn_t *c = connect_with_retry();
+
+    int32_t h_short, h_long;
+    ntabi_status_t st = ntabi_open_thread(c, (int32_t)target, (int32_t)short_tid, &h_short);
+    CHECK(st == NTABI_STATUS_SUCCESS, "OpenThread on the short-lived worker thread succeeds");
+    st = ntabi_open_thread(c, (int32_t)target, (int32_t)long_tid, &h_long);
+    CHECK(st == NTABI_STATUS_SUCCESS, "OpenThread on the long-lived worker thread succeeds");
+
+    ntabi_status_t early = ntabi_wait_single(c, h_long, 50);
+    CHECK(early == NTABI_STATUS_TIMEOUT, "long-lived thread's handle not signaled while it's still alive");
+
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    ntabi_status_t st_short = ntabi_wait_single(c, h_short, 2000);
+    long ms_short = elapsed_ms(&start);
+    CHECK(st_short == NTABI_STATUS_SUCCESS && ms_short < 500,
+          "short-lived thread's handle signals once THAT specific thread exits (got %s, %ldms)",
+          ntabi_status_string(st_short), ms_short);
+
+    ntabi_status_t still_long = ntabi_wait_single(c, h_long, 50);
+    CHECK(still_long == NTABI_STATUS_TIMEOUT,
+          "sibling (long-lived) thread's handle is UNAFFECTED by the short thread's exit - real per-thread granularity");
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    ntabi_status_t st_long = ntabi_wait_single(c, h_long, 2000);
+    long ms_long = elapsed_ms(&start);
+    CHECK(st_long == NTABI_STATUS_SUCCESS && ms_long < 1000,
+          "long-lived thread's handle eventually signals once it too exits (got %s, %ldms)",
+          ntabi_status_string(st_long), ms_long);
+
+    int32_t bogus_h;
+    ntabi_status_t st_bogus = ntabi_open_thread(c, (int32_t)target, 999999, &bogus_h);
+    CHECK(st_bogus == NTABI_STATUS_THREAD_NOT_FOUND, "OpenThread on a nonexistent tid is rejected correctly (got %s)",
+          ntabi_status_string(st_bogus));
+
+    waitpid(target, NULL, 0); /* reap - this test harness is target's real parent */
+    ntabi_close_handle(c, h_short);
+    ntabi_close_handle(c, h_long);
+    ntabi_disconnect(c);
+}
+
+/* Proves the documented alertable-wait delivery timing precisely: a
+ * pending APC short-circuits the NEXT alertable wait immediately (without
+ * touching the waited-on object), a plain (non-alertable) wait is never
+ * interrupted by one, and an alertable wait with no pending APC behaves
+ * exactly like a normal wait. All against this test harness's own thread,
+ * which is a legitimate target - "self" is exactly how a real alertable
+ * wait discovers its own pending APCs. */
+static void test_apc(ntabi_conn_t *c) {
+    printf("test_apc:\n");
+
+    pid_t self_pid = getpid();
+    pid_t self_tid = test_gettid();
+    int32_t th;
+    ntabi_status_t st = ntabi_open_thread(c, (int32_t)self_pid, (int32_t)self_tid, &th);
+    CHECK(st == NTABI_STATUS_SUCCESS, "OpenThread on this test harness's own (pid,tid) succeeds");
+
+    int32_t ev;
+    ntabi_create_event(c, NULL, 0, 0, &ev); /* never signaled by anything in this test */
+
+    st = ntabi_queue_apc(c, th, 0xDEADBEEFULL, 1, 2, 3);
+    CHECK(st == NTABI_STATUS_SUCCESS, "QueueApc on own thread handle succeeds");
+
+    ntabi_apc_info_t apc = {0};
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    st = ntabi_wait_single_alertable(c, ev, 2000, &apc);
+    long ms = elapsed_ms(&start);
+    CHECK(st == NTABI_STATUS_USER_APC && ms < 300,
+          "alertable wait short-circuits immediately on a pending APC rather than blocking (got %s, %ldms)",
+          ntabi_status_string(st), ms);
+    CHECK(apc.routine == 0xDEADBEEFULL && apc.arg1 == 1 && apc.arg2 == 2 && apc.arg3 == 3,
+          "delivered APC carries the exact queued routine/args");
+
+    st = ntabi_wait_single(c, ev, 50);
+    CHECK(st == NTABI_STATUS_TIMEOUT,
+          "the waited-on object itself was never touched by the APC short-circuit (still unsignaled)");
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    st = ntabi_wait_single_alertable(c, ev, 100, &apc);
+    ms = elapsed_ms(&start);
+    CHECK(st == NTABI_STATUS_TIMEOUT && ms >= 90,
+          "with no pending APC left, an alertable wait behaves like a normal wait (blocked for the real timeout, got %ldms)", ms);
+
+    ntabi_queue_apc(c, th, 0x1234ULL, 0, 0, 0);
+    st = ntabi_wait_single(c, ev, 50);
+    CHECK(st == NTABI_STATUS_TIMEOUT, "a pending APC does NOT interrupt a non-alertable wait");
+
+    st = ntabi_wait_single_alertable(c, ev, 100, &apc);
+    CHECK(st == NTABI_STATUS_USER_APC && apc.routine == 0x1234ULL,
+          "the APC skipped by the non-alertable wait is still delivered by the next alertable one");
+
+    ntabi_close_handle(c, ev);
+    ntabi_close_handle(c, th);
+}
+
+/* Real integer accounting only (see ntd.c's handle_suspend_thread comment)
+ * - checks the exact NT return-value convention (report the count BEFORE
+ * this call's adjustment) and that ResumeThread clamps at 0. */
+static void test_suspend_resume(ntabi_conn_t *c) {
+    printf("test_suspend_resume:\n");
+
+    pid_t self_pid = getpid();
+    pid_t self_tid = test_gettid();
+    int32_t th;
+    ntabi_status_t st = ntabi_open_thread(c, (int32_t)self_pid, (int32_t)self_tid, &th);
+    CHECK(st == NTABI_STATUS_SUCCESS, "OpenThread for suspend/resume test succeeds");
+
+    int32_t prev;
+    st = ntabi_suspend_thread(c, th, &prev);
+    CHECK(st == NTABI_STATUS_SUCCESS && prev == 0, "first SuspendThread reports previous count 0 (got %d)", prev);
+    st = ntabi_suspend_thread(c, th, &prev);
+    CHECK(st == NTABI_STATUS_SUCCESS && prev == 1, "second SuspendThread reports previous count 1, accumulates (got %d)", prev);
+    st = ntabi_resume_thread(c, th, &prev);
+    CHECK(st == NTABI_STATUS_SUCCESS && prev == 2, "first ResumeThread reports previous count 2 (got %d)", prev);
+    st = ntabi_resume_thread(c, th, &prev);
+    CHECK(st == NTABI_STATUS_SUCCESS && prev == 1, "second ResumeThread reports previous count 1, net back to 0 (got %d)", prev);
+    st = ntabi_resume_thread(c, th, &prev);
+    CHECK(st == NTABI_STATUS_SUCCESS && prev == 0,
+          "ResumeThread on an already-zero count reports previous 0 and clamps rather than going negative (got %d)", prev);
+
+    ntabi_close_handle(c, th);
+}
+
 int main(int argc, char *argv[]) {
     const char *ntd_path = argc > 1 ? argv[1] : "../../ntd/ntd";
 
@@ -528,6 +713,12 @@ int main(int argc, char *argv[]) {
     test_sections();
     test_completion_port();
     test_process_object();
+    test_thread_object();
+
+    ntabi_conn_t *c2 = connect_with_retry();
+    test_apc(c2);
+    test_suspend_resume(c2);
+    ntabi_disconnect(c2);
 
     kill(ntd_pid, SIGTERM);
     waitpid(ntd_pid, NULL, 0);

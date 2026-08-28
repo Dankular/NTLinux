@@ -3,17 +3,31 @@
  *
  * Phase 2 scope: Event, Mutant, Semaphore, single-object waits, one flat
  * handle space (documented simplification).
- * Phase 3 scope (this version, protocol v2): adds wait-any/wait-all,
- * Section (real POSIX-shared-memory-backed, mapped client-side), I/O
- * Completion ports, Process objects (signaled on exit via pidfd) - and
- * replaces the flat handle space with real per-process handle tables.
+ * Phase 3 scope (protocol v2): adds wait-any/wait-all, Section (real
+ * POSIX-shared-memory-backed, mapped client-side), I/O Completion ports,
+ * Process objects (signaled on exit via pidfd) - and replaces the flat
+ * handle space with real per-process handle tables.
+ * Phase 12 scope (this version, protocol v3): adds Thread objects
+ * (OpenThread, signaled when the *specific* target thread exits - not
+ * the whole process - detected via /proc/<pid>/task/<tid> polling, since
+ * pidfd_open(2) only accepts thread-group-leader pids, not arbitrary
+ * TIDs) and APC support (QueueApc + an `alertable` flag on WAIT_SINGLE:
+ * a pending APC on the calling thread short-circuits an alertable wait
+ * with NTABI_STATUS_USER_APC before the wait is attempted against the
+ * target object - "delivered at the next alertable wait", matching
+ * ROADMAP.md Phase 12's task text precisely). SuspendThread/ResumeThread
+ * implement real suspend-*count* accounting (correct increment/clamp/
+ * decrement semantics, tested) but do NOT freeze real CPU execution of
+ * the target thread - genuine per-thread suspend needs ptrace, a
+ * separate, larger, permission-sensitive undertaking not attempted here
+ * (stated precisely, not silently assumed complete). Real Wine ntdll
+ * integration (routing Wine's own thread creation/sync through this
+ * daemon) remains separate, larger, out-of-reach follow-up work - see
+ * ROADMAP.md Phase 12's own task breakdown for why (needs a full Wine
+ * source build this sandbox doesn't have).
  *
  * Registry (ntd/registry/), services (ntd/services/), security
  * (ntd/security/), RPC (ntd/rpc/) remain untouched - see their READMEs.
- * Thread objects and APCs are NOT implemented - see ROADMAP.md Phase 3's
- * "known gap" for why (both need real per-thread execution-context
- * integration this prototype has no way to provide without real ntdll
- * integration, which is Phase 2's own still-open gap).
  *
  * Single-threaded, event-driven: one loop, no worker threads. Object
  * state, handle tables, and multi-wait bookkeeping need no locking beyond
@@ -44,7 +58,18 @@ static int ntd_pidfd_open(pid_t pid, unsigned int flags) {
     return (int)syscall(SYS_pidfd_open, pid, flags);
 }
 
-typedef enum { OBJ_EVENT, OBJ_MUTANT, OBJ_SEMAPHORE, OBJ_SECTION, OBJ_COMPLETION, OBJ_PROCESS } obj_type_t;
+typedef enum { OBJ_EVENT, OBJ_MUTANT, OBJ_SEMAPHORE, OBJ_SECTION, OBJ_COMPLETION, OBJ_PROCESS, OBJ_THREAD } obj_type_t;
+
+/* One queued APC (Phase 12). A real NT APC also distinguishes kernel-
+ * mode vs user-mode APCs with different injection points; this
+ * prototype models only the single queue/delivery-timing behavior
+ * ROADMAP.md Phase 12 actually asks for (Rule 2 - don't build more than
+ * asked), not the full KAPC/UAPC split. */
+typedef struct apc_packet {
+    uint64_t routine;
+    uint64_t arg1, arg2, arg3;
+    struct apc_packet *next;
+} apc_packet_t;
 
 typedef struct multiwait {
     uint32_t slot_idx;
@@ -95,6 +120,15 @@ typedef struct nt_object {
     pid_t target_pid;
     int pidfd;
     int process_exited;
+    /* thread (Phase 12) - target_pid doubles as the thread's owning pid;
+     * target_tid is the Linux TID. thread_exited is the manual-reset-
+     * like "this specific thread is gone" flag, deliberately distinct
+     * from a whole process exiting (see check_thread_exits). suspend_count
+     * and apc_head/apc_tail are also thread-only fields. */
+    pid_t target_tid;
+    int thread_exited;
+    int suspend_count;
+    apc_packet_t *apc_head, *apc_tail;
 
     waiter_t *waiters;
     struct nt_object *next;
@@ -152,6 +186,25 @@ static void complete_io(uint32_t slot_idx, ntabi_status_t status, int32_t key, i
     slot->resp.completion_key = key;
     slot->resp.completion_bytes = bytes;
     slot->resp.completion_overlapped = overlapped;
+    sem_post(&slot->ready);
+}
+
+static void complete_suspend(uint32_t slot_idx, ntabi_status_t status, int32_t prev_count) {
+    ntabi_slot_t *slot = &g_shm->slots[slot_idx];
+    slot->resp.status = status;
+    slot->resp.prev_suspend_count = prev_count;
+    sem_post(&slot->ready);
+}
+
+static void complete_apc(uint32_t slot_idx, ntabi_status_t status, const apc_packet_t *apc) {
+    ntabi_slot_t *slot = &g_shm->slots[slot_idx];
+    slot->resp.status = status;
+    if (apc) {
+        slot->resp.apc_routine = apc->routine;
+        slot->resp.apc_arg1 = apc->arg1;
+        slot->resp.apc_arg2 = apc->arg2;
+        slot->resp.apc_arg3 = apc->arg3;
+    }
     sem_post(&slot->ready);
 }
 
@@ -231,7 +284,53 @@ static void free_object(nt_object_t *o) {
         completion_packet_t *p = o->queue_head;
         while (p) { completion_packet_t *n = p->next; free(p); p = n; }
     }
+    if (o->type == OBJ_THREAD) {
+        apc_packet_t *a = o->apc_head;
+        while (a) { apc_packet_t *n = a->next; free(a); a = n; }
+    }
     free(o);
+}
+
+/* --- Thread objects (Phase 12) ------------------------------------------
+ *
+ * Real identity: (target_pid, target_tid), the same Linux thread every
+ * time - shared between an explicit OpenThread call and the implicit
+ * "self" lookup an alertable wait does for its own (client_pid,
+ * client_tid), so an APC someone else queues via a real OpenThread
+ * handle and the pending-APC check a thread's own alertable wait makes
+ * are genuinely looking at the same object, not two independent copies.
+ */
+
+static nt_object_t *find_thread_object(pid_t pid, pid_t tid) {
+    for (nt_object_t *o = g_objects; o; o = o->next)
+        if (o->type == OBJ_THREAD && o->target_pid == pid && o->target_tid == tid) return o;
+    return NULL;
+}
+
+/* Real existence check for one specific thread: /proc/<pid>/task/<tid>
+ * exists for exactly as long as that specific thread is alive, even if
+ * sibling threads (and the process itself) keep running - genuinely
+ * finer-grained than pidfd_open's whole-process semantics, and pidfd
+ * itself refuses non-thread-group-leader tids outright (EINVAL). */
+static int thread_is_alive(pid_t pid, pid_t tid) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/task/%d", (int)pid, (int)tid);
+    return access(path, F_OK) == 0;
+}
+
+/* Creates on first reference - no separate "does this thread exist"
+ * failure mode for the *implicit self* lookup (a thread asking about its
+ * own identity always succeeds, it's alive by definition, it's the one
+ * making the call). Explicit OpenThread (handle_open_thread) checks
+ * thread_is_alive itself before ever calling this, for a real
+ * NTABI_STATUS_THREAD_NOT_FOUND on a bogus (pid,tid). */
+static nt_object_t *find_or_create_thread_object(pid_t pid, pid_t tid) {
+    nt_object_t *o = find_thread_object(pid, tid);
+    if (o) return o;
+    o = create_object(OBJ_THREAD, "");
+    o->target_pid = pid;
+    o->target_tid = tid;
+    return o;
 }
 
 /* --- timeouts & multi-wait bookkeeping ----------------------------------*/
@@ -282,6 +381,7 @@ static int object_available(nt_object_t *o) {
         case OBJ_MUTANT:     return !o->owned;
         case OBJ_SEMAPHORE:  return o->count > 0;
         case OBJ_PROCESS:    return o->process_exited;
+        case OBJ_THREAD:     return o->thread_exited;
         case OBJ_SECTION:    return 0; /* not waitable */
         case OBJ_COMPLETION: return o->queue_head != NULL;
     }
@@ -294,6 +394,7 @@ static void consume_object(nt_object_t *o, pid_t requester_pid) {
         case OBJ_MUTANT:     o->owned = 1; o->owner_pid = requester_pid; break;
         case OBJ_SEMAPHORE:  o->count--; break;
         case OBJ_PROCESS:    /* manual-reset-like: stays signaled, nothing to consume */ break;
+        case OBJ_THREAD:     /* manual-reset-like, same as process */ break;
         case OBJ_SECTION:    break;
         case OBJ_COMPLETION: break; /* completion dequeue is handled directly by its own opcode, not via this generic path */
     }
@@ -473,7 +574,30 @@ static void handle_release_semaphore(ntabi_request_t *req, uint32_t slot_idx, pi
     complete(slot_idx, NTABI_STATUS_SUCCESS, 0, prev);
 }
 
+/* Phase 12: an alertable wait checks the calling thread's OWN pending APC
+ * queue before it ever touches the object it was asked to wait on -
+ * "delivered at the next alertable wait" (ROADMAP.md Phase 12), not
+ * "delivered whenever convenient". Deliberately lazy (Design A, see the
+ * top-of-file comment): does NOT interrupt a wait already blocked when the
+ * APC is queued, only checked at the start of a new alertable wait call.
+ * The calling thread's identity is (client_pid, client_tid) off this
+ * slot's own request record - find_or_create_thread_object is safe to
+ * auto-vivify here because a thread asking about itself is alive by
+ * construction. */
 static void handle_wait_single(ntabi_request_t *req, uint32_t slot_idx, pid_t pid) {
+    if (req->alertable) {
+        pid_t tid = g_shm->slots[slot_idx].client_tid;
+        nt_object_t *self = find_or_create_thread_object(pid, tid);
+        if (self->apc_head) {
+            apc_packet_t *a = self->apc_head;
+            self->apc_head = a->next;
+            if (!self->apc_head) self->apc_tail = NULL;
+            complete_apc(slot_idx, NTABI_STATUS_USER_APC, a);
+            free(a);
+            return;
+        }
+    }
+
     nt_object_t *o = find_handle(pid, req->handle);
     if (!o) { complete(slot_idx, NTABI_STATUS_INVALID_HANDLE, 0, 0); return; }
     if (o->type == OBJ_SECTION) { complete(slot_idx, NTABI_STATUS_OBJECT_TYPE_MISMATCH, 0, 0); return; }
@@ -715,6 +839,91 @@ static void check_process_exits(void) {
     }
 }
 
+/* --- Thread object + APC opcode handlers (Phase 12) ---------------------
+ *
+ * OpenThread mirrors handle_open_process exactly: an already-known
+ * (pid,tid) returns the SAME nt_object_t (critical - it may be the one an
+ * alertable wait elsewhere already auto-vivified via
+ * find_or_create_thread_object, and a QueueApc here must land on that
+ * exact object for delivery to work). A genuinely new (pid,tid) is
+ * checked with thread_is_alive first, unlike the implicit self-lookup -
+ * NTABI_STATUS_THREAD_NOT_FOUND is a real, distinct failure mode only
+ * the explicit path has to report. --------------------------------------*/
+
+static void handle_open_thread(ntabi_request_t *req, uint32_t slot_idx, pid_t pid) {
+    nt_object_t *o = find_thread_object(req->target_pid, req->target_tid);
+    if (o) {
+        complete(slot_idx, NTABI_STATUS_SUCCESS, register_handle(pid, o), 0);
+        return;
+    }
+    if (!thread_is_alive(req->target_pid, req->target_tid)) {
+        complete(slot_idx, NTABI_STATUS_THREAD_NOT_FOUND, 0, 0);
+        return;
+    }
+    o = find_or_create_thread_object(req->target_pid, req->target_tid);
+    complete(slot_idx, NTABI_STATUS_SUCCESS, register_handle(pid, o), 0);
+}
+
+/* Same tick-driven polling shape as check_process_exits, but per-thread:
+ * /proc/<pid>/task/<tid> stops existing the moment that one thread exits,
+ * independent of whether sibling threads or the process itself are still
+ * running - the whole reason Thread objects are distinct from Process
+ * objects rather than reusing pidfd. */
+static void check_thread_exits(void) {
+    for (nt_object_t *o = g_objects; o; o = o->next) {
+        if (o->type != OBJ_THREAD || o->thread_exited) continue;
+        if (!thread_is_alive(o->target_pid, o->target_tid)) {
+            o->thread_exited = 1;
+            wake_all_waiters_success(o);
+            notify_multiwaiters(o);
+        }
+    }
+}
+
+static void handle_queue_apc(ntabi_request_t *req, uint32_t slot_idx, pid_t pid) {
+    nt_object_t *o = find_handle(pid, req->handle);
+    if (!o) { complete(slot_idx, NTABI_STATUS_INVALID_HANDLE, 0, 0); return; }
+    if (o->type != OBJ_THREAD) { complete(slot_idx, NTABI_STATUS_OBJECT_TYPE_MISMATCH, 0, 0); return; }
+
+    apc_packet_t *a = calloc(1, sizeof(*a));
+    a->routine = req->apc_routine;
+    a->arg1 = req->apc_arg1;
+    a->arg2 = req->apc_arg2;
+    a->arg3 = req->apc_arg3;
+    if (o->apc_tail) { o->apc_tail->next = a; o->apc_tail = a; }
+    else { o->apc_head = o->apc_tail = a; }
+    /* Deliberately no wake here: a queued APC is only observed by the
+     * target thread's own NEXT alertable wait call (handle_wait_single),
+     * never by interrupting a wait already in progress - see the Phase 12
+     * top-of-file comment and handle_wait_single's own comment. */
+    complete(slot_idx, NTABI_STATUS_SUCCESS, 0, 0);
+}
+
+/* SuspendThread/ResumeThread: real integer accounting, matching real NT's
+ * return-value convention (report the count *before* this call's
+ * adjustment) - but this does NOT freeze the target thread's actual CPU
+ * execution. A genuine per-thread suspend needs ptrace (a separate,
+ * larger, permission-sensitive undertaking - Yama ptrace_scope varies by
+ * environment) and is not attempted here; stated precisely, not silently
+ * assumed complete. */
+static void handle_suspend_thread(ntabi_request_t *req, uint32_t slot_idx, pid_t pid) {
+    nt_object_t *o = find_handle(pid, req->handle);
+    if (!o) { complete_suspend(slot_idx, NTABI_STATUS_INVALID_HANDLE, 0); return; }
+    if (o->type != OBJ_THREAD) { complete_suspend(slot_idx, NTABI_STATUS_OBJECT_TYPE_MISMATCH, 0); return; }
+    int32_t prev = o->suspend_count;
+    o->suspend_count++;
+    complete_suspend(slot_idx, NTABI_STATUS_SUCCESS, prev);
+}
+
+static void handle_resume_thread(ntabi_request_t *req, uint32_t slot_idx, pid_t pid) {
+    nt_object_t *o = find_handle(pid, req->handle);
+    if (!o) { complete_suspend(slot_idx, NTABI_STATUS_INVALID_HANDLE, 0); return; }
+    if (o->type != OBJ_THREAD) { complete_suspend(slot_idx, NTABI_STATUS_OBJECT_TYPE_MISMATCH, 0); return; }
+    int32_t prev = o->suspend_count;
+    if (o->suspend_count > 0) o->suspend_count--; /* clamp at 0, matching real NT */
+    complete_suspend(slot_idx, NTABI_STATUS_SUCCESS, prev);
+}
+
 /* --- dispatch + timeouts -------------------------------------------------*/
 
 static void process_request(uint32_t slot_idx) {
@@ -741,6 +950,10 @@ static void process_request(uint32_t slot_idx) {
         case NTABI_OP_POST_COMPLETION:   handle_post_completion(&req, slot_idx, pid); break;
         case NTABI_OP_REMOVE_COMPLETION: handle_remove_completion(&req, slot_idx, pid); break;
         case NTABI_OP_OPEN_PROCESS:      handle_open_process(&req, slot_idx, pid); break;
+        case NTABI_OP_OPEN_THREAD:       handle_open_thread(&req, slot_idx, pid); break;
+        case NTABI_OP_QUEUE_APC:         handle_queue_apc(&req, slot_idx, pid); break;
+        case NTABI_OP_SUSPEND_THREAD:    handle_suspend_thread(&req, slot_idx, pid); break;
+        case NTABI_OP_RESUME_THREAD:     handle_resume_thread(&req, slot_idx, pid); break;
         default:
             complete(slot_idx, NTABI_STATUS_INVALID_PARAMETER, 0, 0);
     }
@@ -839,6 +1052,7 @@ int main(int argc, char *argv[]) {
 
         expire_timeouts();
         check_process_exits();
+        check_thread_exits();
     }
 
     fprintf(stderr, "ntd: shutting down\n");

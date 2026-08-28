@@ -96,9 +96,47 @@ ntabi_status_t ntabi_remove_completion(ntabi_conn_t *c, int32_t handle, int32_t 
 /* --- Process objects (Phase 3) -------------------------------------------
  * Signaled (and stays signaled) once target_pid exits - detected via
  * pidfd, so this works for any permitted pid, not just a child of ntd's
- * own process. Thread objects are NOT implemented - see ROADMAP.md
- * Phase 3's "known gap". */
+ * own process. */
 ntabi_status_t ntabi_open_process(ntabi_conn_t *c, int32_t target_pid, int32_t *out_handle);
+
+/* --- Thread objects + APCs (Phase 12) ------------------------------------
+ * Signaled (and stays signaled) once the *specific* (target_pid,
+ * target_tid) thread exits - detected via /proc/<pid>/task/<tid>, not
+ * pidfd (pidfd_open(2) only accepts thread-group-leader pids). Returns
+ * NTABI_STATUS_THREAD_NOT_FOUND for a (pid,tid) that doesn't exist at
+ * call time.
+ *
+ * ntabi_queue_apc appends one APC packet to the target thread's queue.
+ * It is only ever observed by that thread's own next call to
+ * ntabi_wait_single_alertable - never by interrupting a wait already in
+ * progress (Design A, documented in ntd/ntd.c). A plain ntabi_wait_single
+ * is never interrupted by a pending APC, alertable or not.
+ *
+ * ntabi_suspend_thread/ntabi_resume_thread are real integer accounting
+ * (matching real NT's "report the count before this call" convention,
+ * clamped at 0) - they do NOT freeze the target thread's actual CPU
+ * execution (that needs ptrace, not attempted here; stated precisely).
+ */
+typedef struct {
+    uint64_t routine;
+    uint64_t arg1, arg2, arg3;
+} ntabi_apc_info_t;
+
+ntabi_status_t ntabi_open_thread(ntabi_conn_t *c, int32_t target_pid, int32_t target_tid,
+                                  int32_t *out_handle);
+ntabi_status_t ntabi_queue_apc(ntabi_conn_t *c, int32_t thread_handle,
+                                uint64_t routine, uint64_t arg1, uint64_t arg2, uint64_t arg3);
+ntabi_status_t ntabi_suspend_thread(ntabi_conn_t *c, int32_t thread_handle, int32_t *out_prev_count);
+ntabi_status_t ntabi_resume_thread(ntabi_conn_t *c, int32_t thread_handle, int32_t *out_prev_count);
+
+/* Like ntabi_wait_single, but alertable: if the calling thread (identified
+ * by this process's pid and this OS thread's tid, set on every request -
+ * see ntabi_protocol.h's client_tid) has a pending APC, this returns
+ * NTABI_STATUS_USER_APC immediately with *out_apc filled in and the
+ * target handle's object untouched - it is not consumed, not even if it
+ * was simultaneously available. */
+ntabi_status_t ntabi_wait_single_alertable(ntabi_conn_t *c, int32_t handle, int32_t timeout_ms,
+                                            ntabi_apc_info_t *out_apc);
 
 const char *ntabi_status_string(ntabi_status_t status);
 
