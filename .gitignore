@@ -43,6 +43,9 @@
 /driver/net/reactos/*.o
 /driver/net/reactos/*.sys
 /driver/net/reactos/build/
+/driver/usb/reactos/*.o
+/driver/usb/reactos/*.sys
+/driver/usb/reactos/ntusb_test.exe
 
 # Phase 5: fetched ReactOS x64 nightly ISO - large, not vendored (consume,
 # don't vendor - ADR-0002/Rule 17), same as the release ISOs above.

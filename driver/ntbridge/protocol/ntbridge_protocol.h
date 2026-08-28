@@ -54,8 +54,12 @@ extern "C" {
  * (ARCHITECTURE.md section 22) — a real wire-format change, hence the
  * bump; a v1 guest mapping a v2 region (or vice versa) is refused by
  * the magic+version check every side of this protocol already makes,
- * exactly as designed. */
-#define NTBRIDGE_PROTOCOL_VERSION 2
+ * exactly as designed.
+ *
+ * v3 (Phase 8): added usb_req_ring/usb_resp_ring for the USB bridge
+ * (ARCHITECTURE.md section 27's "USB device cell", Phase 8's URB
+ * translation/bridging task). Same reasoning as the v1->v2 bump. */
+#define NTBRIDGE_PROTOCOL_VERSION 3
 
 #define NTBRIDGE_MAGIC 0x5242544Eu /* "NTBR" little-endian */
 
@@ -168,6 +172,58 @@ typedef struct ntbridge_net_frame {
     uint8_t data[NTBRIDGE_NET_FRAME_MAX];
 } ntbridge_net_frame_t;
 
+/* USB bridge (Phase 8, ARCHITECTURE.md section 27's "USB device cell" /
+ * section 51's "Linux owns... USB host stack"): NTLinux's ReactOS-side
+ * driver (driver/usb/reactos/ntusb.c) presents a single synthetic
+ * vendor-class USB device (one bulk IN endpoint, one bulk OUT endpoint)
+ * directly — it is not a virtual USB Host Controller Driver, so it does
+ * not (yet) let an arbitrary pre-existing vendor .sys bind to a
+ * PnP-enumerated bus the way a real USB stack would; see that driver's
+ * README for the real gap this leaves and why (mingw-w64's DDK ships
+ * usb.h/usbioctl.h — the URB and IOCTL_INTERNAL_USB_SUBMIT_URB shapes a
+ * client driver above a bus uses — but not usbport.h, the internal
+ * miniport interface a from-scratch HC driver would need to register
+ * with ReactOS's usbport.sys; confirmed absent by direct search, not
+ * assumed).
+ *
+ * Device/configuration/string descriptors for that synthetic device are
+ * entirely local to ntusb.c (there is no real hardware backing them, so
+ * there is nothing for Linux to be authoritative over) — only the
+ * bulk-transfer *data* genuinely needs to cross the bridge, which is
+ * what these two rings carry, one per direction, deliberately whole
+ * payloads rather than descriptors (same simplicity-over-throughput
+ * tradeoff net_tx_ring/net_rx_ring made in Phase 7). `function` is
+ * carried for forward documentation even though this first cut only
+ * ever sets it to NTBRIDGE_USB_FN_BULK_OR_INTERRUPT_TRANSFER — a
+ * genuine URB_FUNCTION_* code from real Windows usb.h, not a
+ * bridge-invented one, so ntusb.c's dispatch can use it directly. */
+typedef enum ntbridge_usb_function {
+    NTBRIDGE_USB_FN_BULK_OR_INTERRUPT_TRANSFER = 0x0009 /* == URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER */
+} ntbridge_usb_function_t;
+
+#define NTBRIDGE_USB_DATA_MAX 4096u /* one bridged transfer's worth; a
+                                      * larger client request is split
+                                      * across multiple messages by
+                                      * ntusb.c, not grown here — same
+                                      * fixed-max-payload tradeoff
+                                      * NTBRIDGE_NET_FRAME_MAX made */
+
+typedef struct ntbridge_usb_urb_msg {
+    uint64_t request_id; /* guest-assigned, echoed back on the matching
+                           * response so the guest can pair a completion
+                           * with its pending IRP without depending on
+                           * strict ring ordering */
+    uint32_t function;   /* ntbridge_usb_function_t */
+    uint32_t status;     /* request side: unused (0). response side: 0 =
+                           * success, nonzero = a USBD_STATUS-shaped
+                           * failure code ntusb.c reports up as the
+                           * URB's Hdr.Status */
+    uint8_t endpoint;    /* bEndpointAddress (direction bit included) */
+    uint8_t reserved[3];
+    uint32_t length;     /* valid bytes in data[] */
+    uint8_t data[NTBRIDGE_USB_DATA_MAX];
+} ntbridge_usb_urb_msg_t;
+
 #define NTBRIDGE_RING_DECL(name, elem_type)                                  \
     typedef struct name {                                                    \
         volatile uint64_t head; /* next slot the producer will write */      \
@@ -179,6 +235,7 @@ NTBRIDGE_RING_DECL(ntbridge_log_ring, ntbridge_log_entry_t);
 NTBRIDGE_RING_DECL(ntbridge_pnp_ring, ntbridge_pnp_descriptor_t);
 NTBRIDGE_RING_DECL(ntbridge_pnp_ack_ring, ntbridge_pnp_ack_t);
 NTBRIDGE_RING_DECL(ntbridge_net_ring, ntbridge_net_frame_t);
+NTBRIDGE_RING_DECL(ntbridge_usb_ring, ntbridge_usb_urb_msg_t);
 
 /* ---- shared header -------------------------------------------------
  *
@@ -210,6 +267,8 @@ typedef struct ntbridge_shm_header {
     ntbridge_pnp_ack_ring_t pnp_ack_ring;   /* guest -> host: per-device acknowledgment */
     ntbridge_net_ring_t net_tx_ring;        /* guest -> host: frames the NDIS miniport is sending */
     ntbridge_net_ring_t net_rx_ring;        /* host -> guest: frames read off the host TAP device */
+    ntbridge_usb_ring_t usb_req_ring;       /* guest -> host: bulk OUT payloads / bulk IN requests */
+    ntbridge_usb_ring_t usb_resp_ring;      /* host -> guest: bulk IN payloads / bulk OUT completions */
 } ntbridge_shm_header_t;
 
 /* ---- ring push/pop helpers ------------------------------------------
@@ -255,6 +314,7 @@ NTBRIDGE_RING_PUSH_DECL(ntbridge_log_ring, ntbridge_log_entry_t)
 NTBRIDGE_RING_PUSH_DECL(ntbridge_pnp_ring, ntbridge_pnp_descriptor_t)
 NTBRIDGE_RING_PUSH_DECL(ntbridge_pnp_ack_ring, ntbridge_pnp_ack_t)
 NTBRIDGE_RING_PUSH_DECL(ntbridge_net_ring, ntbridge_net_frame_t)
+NTBRIDGE_RING_PUSH_DECL(ntbridge_usb_ring, ntbridge_usb_urb_msg_t)
 
 #define NTBRIDGE_SHM_SIZE_MIN ((uint32_t)sizeof(ntbridge_shm_header_t))
 
@@ -264,7 +324,16 @@ NTBRIDGE_RING_PUSH_DECL(ntbridge_net_ring, ntbridge_net_frame_t)
  * without an immediate resize. Bumped from 1 MiB to 4 MiB in Phase 7 to
  * fit the two new net_tx_ring/net_rx_ring rings
  * (2 * 64 * ~1518 bytes =~ 194 KiB alone) with real headroom left over,
- * not just barely fitting today's struct size. */
+ * not just barely fitting today's struct size.
+ *
+ * Phase 8's usb_req_ring/usb_resp_ring add another ~515 KiB
+ * (2 * 64 * 4120 bytes). Checked by actually compiling and printing
+ * sizeof(ntbridge_shm_header_t) (728.7 KiB total) against this constant
+ * before shipping the v3 bump — precisely because Phase 7's own
+ * hardcoded-SHM_SIZE_MB bug (driver/cell/launcher/ntcell) was found only
+ * by running, not by hand arithmetic. Unlike Phase 7, this still fits
+ * inside 4 MiB with headroom, so no size bump was needed here, and
+ * ntcell's SHM_SIZE_MB=4 stays correct as-is. */
 #define NTBRIDGE_SHM_DEFAULT_SIZE (4u << 20) /* 4 MiB */
 
 #ifdef __cplusplus

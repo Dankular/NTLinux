@@ -1,0 +1,60 @@
+; ntusb.inf - installs the ReactOS-side USB bridge driver (ntusb.sys)
+; against the ivshmem PCI function QEMU exposes for the driver cell
+; (driver/cell/launcher/ntcell's -device ivshmem-plain), same shape as
+; driver/ntbridge/reactos/ntbridge.inf and driver/net/reactos/ntnet.inf.
+;
+; Matches NTBRIDGE_IVSHMEM_VENDOR_ID/DEVICE_ID (0x1AF4/0x1110), same as
+; those two - a three-way hardware ID collision now (ntnet.inf's own
+; comment already flagged the ntbridge/ntnet pair; this makes it three).
+; Pre-existing, not new: each phase's driver is verified independently,
+; never loaded against the same cell at once, so it hasn't blocked
+; anything - the real fix (a distinct ivshmem instance per bridge, or a
+; distinct subsystem-vendor-id/subsystem-device-id QEMU can stamp per
+; device) is real follow-up work, not attempted in this pass. See
+; driver/usb/README.md.
+;
+; NOT YET TESTED live via a real PnP install - see ROADMAP.md Phase 14.
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = USB
+ClassGuid   = {36FC9E60-C465-11CF-8056-444553540000}
+Provider    = %NTLinux%
+DriverVer   = 08/28/2026,0.1.0.0
+
+[Manufacturer]
+%NTLinux% = NTLinux, NTx86
+
+[NTLinux.NTx86]
+%NtUsb.DeviceDesc% = NtUsb_Install, PCI\VEN_1AF4&DEV_1110
+
+[NtUsb_Install]
+CopyFiles = NtUsb_CopyFiles
+
+[NtUsb_Install.Services]
+AddService = ntusb, 0x00000002, NtUsb_Service
+
+[NtUsb_Service]
+DisplayName    = %NtUsb.SvcDesc%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\ntusb.sys
+
+[NtUsb_CopyFiles]
+ntusb.sys
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+ntusb.sys = 1
+
+[DestinationDirs]
+NtUsb_CopyFiles = 12 ; %SystemRoot%\System32\drivers
+
+[Strings]
+NTLinux           = "NTLinux"
+NtUsb.DeviceDesc  = "NTLinux ntbridge USB Bridge"
+NtUsb.SvcDesc     = "NTLinux ntusb - USB bridge (Phase 8)"
+DiskName          = "NTLinux Driver Support Disk"

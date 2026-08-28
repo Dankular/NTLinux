@@ -232,9 +232,55 @@ int main(int argc, char **argv)
         }
     }
 
+    /*
+     * Phase 8 (USB bridge) round-trip: same shape as the net round trip
+     * above, over usb_req_ring/usb_resp_ring instead — standing in for
+     * what a real client driver's URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER
+     * submission would do (driver/usb/reactos/ntusb.c's NtusbProcessUrb),
+     * against driver/ntbridge/host/'s --usb-echo mode (that mode's own
+     * header comment explains why it's a software-only stand-in here,
+     * not a real usbfs-backed bridge — this sandbox's kernel has no USB
+     * subsystem at all).
+     */
+    const char *usb_tx_magic = "NTLXUSBTEST-GUEST-TO-HOST";
+    const char *usb_rx_magic = "NTLXUSBTEST-HOST-TO-GUEST";
+    int usb_tx_sent = 0;
+    int usb_rx_confirmed = 0;
+
+    {
+        ntbridge_usb_urb_msg_t msg;
+        memset(&msg, 0, sizeof(msg));
+        msg.request_id = 1;
+        msg.function = NTBRIDGE_USB_FN_BULK_OR_INTERRUPT_TRANSFER;
+        msg.endpoint = 0x01; /* bulk OUT, matching NTUSB_BULK_OUT_ENDPOINT */
+        size_t magic_len = strlen(usb_tx_magic);
+        memcpy(msg.data, usb_tx_magic, magic_len);
+        msg.length = (uint32_t)magic_len;
+
+        if (ntbridge_usb_ring_try_push(&shm->usb_req_ring, &msg)) {
+            usb_tx_sent = 1;
+            log_both(shm, NTBRIDGE_LOG_INFO, "usb: pushed test request to usb_req_ring");
+        } else {
+            log_console("ntbridge-guest-test: WARNING: usb_req_ring full, could not send test request");
+        }
+    }
+
     while (now_ns() < deadline) {
         shm->guest_heartbeat_seq++;
         shm->guest_heartbeat_time_ns = now_ns();
+
+        if (!usb_rx_confirmed) {
+            ntbridge_usb_urb_msg_t msg;
+            while (ntbridge_usb_ring_try_pop(&shm->usb_resp_ring, &msg)) {
+                size_t magic_len = strlen(usb_rx_magic);
+                if (msg.length >= magic_len && memcmp(msg.data, usb_rx_magic, magic_len) == 0) {
+                    usb_rx_confirmed = 1;
+                    log_both(shm, NTBRIDGE_LOG_INFO, "usb: received expected reply on usb_resp_ring - PASS");
+                } else {
+                    log_both(shm, NTBRIDGE_LOG_WARN, "usb: received an unexpected reply on usb_resp_ring");
+                }
+            }
+        }
 
         if (!net_rx_confirmed) {
             ntbridge_net_frame_t frame;
@@ -281,9 +327,10 @@ int main(int argc, char **argv)
     char summary[256];
     snprintf(summary, sizeof(summary),
              "guest shutting down: saw %d device(s), heartbeat seq=%llu, "
-             "net: sent=%s recv_confirmed=%s",
+             "net: sent=%s recv_confirmed=%s, usb: sent=%s recv_confirmed=%s",
              devices_seen, (unsigned long long)shm->guest_heartbeat_seq,
-             net_tx_sent ? "yes" : "no", net_rx_confirmed ? "yes" : "no");
+             net_tx_sent ? "yes" : "no", net_rx_confirmed ? "yes" : "no",
+             usb_tx_sent ? "yes" : "no", usb_rx_confirmed ? "yes" : "no");
     log_both(shm, NTBRIDGE_LOG_INFO, summary);
 
     munmap(map, map_size);
@@ -296,6 +343,8 @@ int main(int argc, char **argv)
      * net_rx_confirmed alone must not fail runs that never asked for
      * network verification. driver/net/reactos/run-test.sh (Phase 7's
      * own test) checks net_rx_confirmed itself, via this line in the
-     * log, rather than this process's exit code. */
+     * log, rather than this process's exit code. Same reasoning covers
+     * usb_rx_confirmed (Phase 8) - driver/usb/reactos/run-test.sh checks
+     * it via the log line too. */
     return 0;
 }

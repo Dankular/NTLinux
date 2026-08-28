@@ -32,6 +32,17 @@
  * networking through the Windows TCP/IP stack" design ARCHITECTURE.md
  * section 22 describes.
  *
+ * Phase 8 (USB bridge, ARCHITECTURE.md section 27's "USB device cell")
+ * adds a fifth: with --usb-echo, drains usb_req_ring and answers each
+ * bulk-transfer request with a fixed, distinctly-tagged reply on
+ * usb_resp_ring. This is an honest software-only stand-in, stated
+ * plainly, not a real physical-USB bridge — this sandbox's kernel has
+ * no USB subsystem at all (CONFIG_USB not set, confirmed by direct
+ * inspection of /proc/config.gz — no usbfs, no /dev/bus/usb, nothing
+ * for a real bridge mode to read/write), unlike Phase 7's TAP device,
+ * which is a genuine (if virtual) Linux netdev. See driver/usb/
+ * README.md for the real bridge-to-usbfs design this stands in for.
+ *
  * The fourth deliverable — the actual bootable ReactOS image + KVM/QEMU
  * launcher — is driver/cell/images/ + driver/cell/launcher/ntcell; this
  * daemon doesn't know or care whether the process on the other end of
@@ -97,6 +108,39 @@ static int open_tap(const char *ifname_in, char *ifname_out, size_t ifname_out_l
 
     snprintf(ifname_out, ifname_out_len, "%s", ifr.ifr_name);
     return fd;
+}
+
+/*
+ * Phase 8's honest stand-in for a real usbfs-backed bridge (see the file
+ * header comment): for every bulk-transfer request the guest pushes,
+ * reply with this fixed, distinctly-tagged payload — same "tagged send,
+ * distinctly-tagged reply" verification shape net-tap-echo.py already
+ * established for Phase 7, so a live test can tell a real round trip
+ * from a loopback-by-accident.
+ */
+static const char g_usb_echo_reply[] = "NTLXUSBTEST-HOST-TO-GUEST";
+
+static void usb_echo_tick(ntbridge_shm_header_t *shm, uint64_t *requests_seen, uint64_t *replies_sent)
+{
+    ntbridge_usb_urb_msg_t req;
+    while (ntbridge_usb_ring_try_pop(&shm->usb_req_ring, &req)) {
+        (*requests_seen)++;
+        printf("ntbridge-host: usb-echo: request_id=%llu endpoint=0x%02x length=%u\n",
+               (unsigned long long)req.request_id, req.endpoint, req.length);
+
+        ntbridge_usb_urb_msg_t resp;
+        memset(&resp, 0, sizeof(resp));
+        resp.request_id = req.request_id;
+        resp.function = NTBRIDGE_USB_FN_BULK_OR_INTERRUPT_TRANSFER;
+        resp.status = 0;
+        resp.length = (uint32_t)sizeof(g_usb_echo_reply) - 1;
+        memcpy(resp.data, g_usb_echo_reply, resp.length);
+
+        if (ntbridge_usb_ring_try_push(&shm->usb_resp_ring, &resp))
+            (*replies_sent)++;
+        else
+            fprintf(stderr, "ntbridge-host: usb_resp_ring full, dropped a reply\n");
+    }
 }
 
 static volatile sig_atomic_t g_stop = 0;
@@ -237,6 +281,7 @@ int main(int argc, char **argv)
     int duration_s = 15;
     int device_count = 3;
     const char *tap_name_arg = NULL;
+    int usb_echo = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--shm") == 0 && i + 1 < argc) {
@@ -247,8 +292,10 @@ int main(int argc, char **argv)
             device_count = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--tap") == 0 && i + 1 < argc) {
             tap_name_arg = argv[++i];
+        } else if (strcmp(argv[i], "--usb-echo") == 0) {
+            usb_echo = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
-            printf("usage: %s [--shm PATH] [--duration SECONDS] [--devices N] [--tap IFNAME]\n", argv[0]);
+            printf("usage: %s [--shm PATH] [--duration SECONDS] [--devices N] [--tap IFNAME] [--usb-echo]\n", argv[0]);
             return 0;
         }
     }
@@ -298,6 +345,10 @@ int main(int argc, char **argv)
     int64_t first_guest_heartbeat_ns = 0;
     uint64_t log_lines_seen = 0;
     uint64_t tap_frames_in = 0, tap_frames_out = 0;
+    uint64_t usb_requests_seen = 0, usb_replies_sent = 0;
+
+    if (usb_echo)
+        printf("ntbridge-host: usb-echo mode: answering every bulk request with a fixed tagged reply\n");
 
     printf("ntbridge-host: running for %ds, waiting on guest heartbeat + %d device ack(s)...\n",
            duration_s, devices_seeded);
@@ -360,6 +411,9 @@ int main(int argc, char **argv)
             }
         }
 
+        if (usb_echo)
+            usb_echo_tick(shm, &usb_requests_seen, &usb_replies_sent);
+
         uint64_t guest_seq = __atomic_load_n(&shm->guest_heartbeat_seq, __ATOMIC_ACQUIRE);
         if (guest_seq > 0 && first_guest_heartbeat_ns == 0) {
             first_guest_heartbeat_ns = now_ns();
@@ -373,7 +427,7 @@ int main(int argc, char **argv)
          * would make even a synthetic ping-style test feel broken; still
          * a poll, not an interrupt (see the doorbell note), just a
          * shorter one. */
-        struct timespec tick = { .tv_sec = 0, .tv_nsec = (tap_fd >= 0 ? 10 : 100) * 1000 * 1000 };
+        struct timespec tick = { .tv_sec = 0, .tv_nsec = (tap_fd >= 0 || usb_echo ? 10 : 100) * 1000 * 1000 };
         nanosleep(&tick, NULL);
     }
 
@@ -384,6 +438,9 @@ int main(int argc, char **argv)
     if (tap_fd >= 0)
         printf(", TAP frames host->guest: %llu, guest->host: %llu",
                (unsigned long long)tap_frames_in, (unsigned long long)tap_frames_out);
+    if (usb_echo)
+        printf(", USB requests seen: %llu, replies sent: %llu",
+               (unsigned long long)usb_requests_seen, (unsigned long long)usb_replies_sent);
     printf("\n");
 
     if (tap_fd >= 0)

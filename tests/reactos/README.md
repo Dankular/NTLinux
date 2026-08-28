@@ -1,9 +1,9 @@
 # ReactOS Driver-Cell Tests
 
-Tests for the ReactOS driver-cell prototype (Phase 4/5/7 success criteria).
+Tests for the ReactOS driver-cell prototype (Phase 4/5/7/8 success criteria).
 
 **Owner:** NTLinux
-**Status:** Implemented and passing (Phase 4); network round-trip added and passing (Phase 7)
+**Status:** Implemented and passing (Phase 4); network round-trip added and passing (Phase 7); USB round-trip added and passing (Phase 8)
 
 `run-test.sh` is the Rule 11 test for Phase 4's ntbridge deliverables:
 builds `driver/ntbridge/host/ntbridge-host` and the components below,
@@ -91,5 +91,27 @@ hardcoded `SHM_SIZE_MB=1` that needed updating to match; fixed, with a
 comment explaining the cross-language duplication a bash script can't
 avoid by including the C header. Full transcript in `ROADMAP.md`
 Phase 7.
+
+## Phase 8 addition: the USB round trip
+
+`ntbridge-guest-test.c` also exercises `usb_req_ring`/`usb_resp_ring`
+(ARCHITECTURE.md section 27's "USB device cell" — see `driver/usb/
+README.md`): it pushes one tagged bulk-transfer request into
+`usb_req_ring` at startup and watches `usb_resp_ring` for a
+distinctly-tagged reply, logging `PASS`/content mismatch either way via
+`log_ring` — same shape as the Phase 7 net round trip above, standing
+in for what a real client driver's `URB_FUNCTION_BULK_OR_INTERRUPT_
+TRANSFER` submission would drive through `driver/usb/reactos/ntusb.c`.
+`driver/usb/reactos/run-test.sh` drives this: starts `ntbridge-host
+--usb-echo` (an honest software-only reply responder — no real USB
+hardware exists in this sandbox to bridge to, see that mode's own
+README section), boots this same guest test client, and checks the
+host's log for the guest's confirmed-PASS line.
+
+**Verified live**: guest heartbeat detected, `usb: pushed test request
+to usb_req_ring` then `usb: received expected reply on usb_resp_ring -
+PASS` in the guest's own log; `ntbridge-host`'s summary shows `USB
+requests seen: 1, replies sent: 1`. Full transcript in `ROADMAP.md`
+Phase 8.
 
 See [`docs/ARCHITECTURE.md`](/docs/ARCHITECTURE.md) for full architectural context and [`ROADMAP.md`](/ROADMAP.md) for phase sequencing. Before implementing anything here, check whether the capability already exists upstream (Wine / Proton / ReactOS / Linux / Mesa / DXVK / vkd3d-proton / Gamescope / PipeWire / VFIO-IOMMU-KVM) per Rule 1 in `CLAUDE.md`.

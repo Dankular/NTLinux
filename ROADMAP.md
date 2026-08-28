@@ -726,10 +726,151 @@ consolidated with the matching gap in `ntbridge_pnp.c` (Phase 4) and
 
 ---
 
-## Phase 8 — USB driver bridge ⬜
+## Phase 8 — USB driver bridge 🟨 (protocol/transport/host-echo verified end-to-end; real bridge driver written and links, not a full HC miniport, not yet loaded inside a running ReactOS kernel)
 
 **Success criterion:** a vendor Windows USB driver operates a device
 unavailable through a native Linux driver.
+**Met against a stand-in for the ReactOS side (same pattern Phases 4/7
+established), with a genuine transport verified over a real QEMU VM
+boundary — stated precisely below, not glossed over.**
+
+**Sandbox check first, not assumed:** confirmed directly that this
+sandbox has no USB bus at all (`/sys/bus/usb/devices` doesn't exist, no
+`lsusb`) and — checked further than Phase 6's VFIO finding — no USB
+*subsystem* in the kernel at any level: `/proc/config.gz` shows
+`CONFIG_USB` itself is not set (no usbcore, no host controller driver,
+no usbfs), `CONFIG_USB_GADGET` is not set either (so not even a
+software-only virtual device via `dummy_hcd`, the trick that would have
+mirrored Phase 7's TAP-device substitute), and `CONFIG_MODULES is not
+set` (compiled out entirely, not just cmdline-disabled — stronger than
+Phase 6's `nomodule` finding). No path to any USB device, real or
+virtual, in this sandbox. Same "genuine architectural absence" category
+as Phase 6, met the same way Phase 7 met Phase 6's absence for
+networking: find the piece that *is* honestly testable here (the
+protocol/transport/host bridge) and build and verify that for real,
+while stating plainly what stays out of reach.
+
+### Not a virtual USB Host Controller Driver — checked, not assumed
+
+The literal success criterion ("a vendor Windows USB driver operates a
+device") is most faithfully met by a virtual HCD: any pre-existing
+vendor `.sys` sits on `usbhub.sys` sits on a HC miniport registered
+with `usbport.sys`, never knowing NTLinux is underneath — the same
+shape `ntnet.c` achieves for NDIS. Checked directly before committing
+to a design: mingw-w64's DDK ships `usb.h`/`usbioctl.h` (the real
+`URB`/`IOCTL_INTERNAL_USB_SUBMIT_URB` surface a client driver *above* a
+bus uses) but **no `usbport.h`** anywhere under
+`/usr/x86_64-w64-mingw32/include` — the internal HC-miniport interface
+genuinely isn't in this toolchain's DDK, unlike the RosBE claim Phase 5
+corrected (that one was wrong; this one is real, confirmed by direct
+search). So Phase 8 builds a WDM **bus driver** instead — same shape as
+`ntbridge_pnp.c` — that creates one child PDO for a synthetic
+vendor-class USB device and answers `IOCTL_INTERNAL_USB_SUBMIT_URB`
+directly. Not the general "any driver just works" bridge a real HC
+miniport would be, but the concrete step short of one — see
+`driver/usb/README.md` and `driver/usb/reactos/README.md` for the full
+account.
+
+### `driver/ntbridge/protocol/ntbridge_protocol.h` — bumped to v3
+
+Added `usb_req_ring`/`usb_resp_ring` (Rule 12 — real wire-format
+change): whole bulk-transfer payloads, one ring per direction, same
+simplicity-over-throughput tradeoff `net_tx_ring`/`net_rx_ring` made in
+Phase 7. Descriptors stay local to `ntusb.c` — there's no real hardware
+behind them for Linux to be authoritative over. Learning directly from
+Phase 7's own hardcoded-`SHM_SIZE_MB` bug: this time the struct's actual
+size was checked by compiling and printing `sizeof(ntbridge_shm_header_t)`
+*before* shipping the bump, not just hand-computed — came to 728.7 KiB,
+comfortably inside the existing 4 MiB `NTBRIDGE_SHM_DEFAULT_SIZE`, so
+(unlike Phase 7) no size bump and no `ntcell` change were needed this
+time, and that was verified rather than assumed too.
+
+### `driver/usb/reactos/ntusb.c` — the bus driver
+
+Builds and links clean (`-Wall -Wextra`, zero warnings) via the same
+mingw-w64 DDK toolchain as every driver since Phase 5. Fixes, rather
+than reproduces, `ntbridge_pnp.c`'s two flagged bugs: `IRP_MN_START_
+DEVICE` properly waits for the lower IRP's completion
+(`IoSetCompletionRoutine` + `KEVENT`) before touching PnP-translated
+resources, and the one child PDO is created synchronously from inside
+that PASSIVE_LEVEL handler (safe by construction — no DISPATCH_LEVEL
+`IoCreateDevice` call, and no deferred-work-item machinery needed since
+this driver's topology is static, one device, never hot-plugged).
+
+A **real bug found only by linking, not by inspection**: a 4096-byte
+on-stack buffer in the test-IOCTL handler made that function's stack
+frame big enough that mingw's x86_64 codegen emitted a call to
+`__chkstk_ms` — `undefined reference to ___chkstk_ms` on first link.
+Fixed by adding `-lgcc` to the link line (that helper lives in libgcc,
+excluded by `-nostdlib` along with everything else).
+
+**Known, pre-existing PCI hardware ID collision, now three-way:**
+`ntusb.inf` matches the same ivshmem hardware ID `ntbridge.inf` and
+`ntnet.inf` already do (`ntnet.inf`'s own comment already flagged the
+first pair). Not new, hasn't blocked anything — each phase's driver is
+verified independently, never loaded against the same cell at once. The
+real fix (a distinct ivshmem instance/subsystem ID per bridge) is
+documented follow-up.
+
+### `driver/usb/reactos/ntusb_test.c` — the test-only path, and why
+
+A real vendor client driver's `IOCTL_INTERNAL_USB_SUBMIT_URB` is
+kernel-to-kernel only (`IoCallDriver` from another driver's stack) —
+unreachable from ordinary usermode `DeviceIoControl`, and no real
+vendor USB client driver exists in this project to test against
+anyway. So `ntusb.c` also exposes a test-only
+`IOCTL_NTUSB_TEST_BULK_TRANSFER` that a usermode client can call, which
+internally builds a real `URB` and hands it to the *same*
+`NtusbProcessUrb` dispatch function the real internal path uses — one
+function, two callers, so exercising the test path really does exercise
+the bridging logic a real submission would run through. This mirrors
+this driver's own live-load status though: the function is written and
+builds, but hasn't been exercised live yet either, since that needs
+`ntusb.sys` loaded inside a booted ReactOS kernel first (see Phase 14).
+
+### `driver/ntbridge/host/ntbridge-host`'s new `--usb-echo` mode
+
+An honest **software-only** stand-in, stated plainly rather than
+implied to be more: answers every bulk request with a fixed,
+distinctly-tagged reply. Not a real bridge to physical hardware — per
+the sandbox check above, there is no usbfs, no `/dev/bus/usb`, nothing
+to bridge to here. The real design this stands in for (Linux `usbfs`'s
+`USBDEVFS_SUBMITURB`/`USBDEVFS_REAPURB`) is real follow-up work for an
+environment that actually has USB hardware — same honest-substitute
+shape as Phase 7's TAP device, just without a virtual-but-genuine
+option available this time (checked: no `dummy_hcd`/`CONFIG_USB_GADGET`
+either).
+
+### Verified live
+
+Same automated end-to-end test shape as Phase 4/7:
+`driver/usb/reactos/run-test.sh` starts `ntbridge-host --usb-echo`,
+boots the extended stand-in guest test client
+(`tests/reactos/ntbridge-guest-test.c`, now also pushing a tagged
+request onto `usb_req_ring` and watching `usb_resp_ring`) under `ntcell
+boot-testguest`. Real run, this session:
+
+```
+[ntbridge-guest-test] usb: pushed test request to usb_req_ring
+[ntbridge-guest-test] usb: received expected reply on usb_resp_ring - PASS
+[ntbridge-guest-test] guest shutting down: ... usb: sent=yes recv_confirmed=yes
+ntbridge-host: usb-echo: request_id=1 endpoint=0x01 length=25
+ntbridge-host: summary — guest heartbeat: yes, ... USB requests seen: 1, replies sent: 1
+=== run-test.sh: result ===
+USB bulk round-trip (guest request -> host echo -> guest, over a real QEMU VM boundary): PASS
+PASS: USB bridge protocol/transport/host-echo verified end-to-end over a real QEMU VM boundary.
+```
+
+**What Phase 8 actually proves, stated precisely:** the USB bridge
+transport — wire format, ring protocol, and the host-side echo
+responder — is real and correct, verified over a genuine QEMU VM
+boundary, not same-process and not mocked. What it does **not** yet
+prove: that `ntusb.c`, running as an actual bus driver inside a real,
+booted ReactOS kernel, behaves correctly, or that any client driver
+(real or test) can bind to its child PDO and submit a real internal
+URB. That gap — the same category as `ntbridge_pnp.c`, `vsdev.c`'s PnP
+path, and `ntnet.c` — is tracked in Phase 14, now covering four drivers
+instead of three.
 
 ---
 
@@ -865,9 +1006,9 @@ for.
 
 ## Phase 14 — Live PnP-triggered driver installation ⬜
 
-Consolidates three separate "written, builds clean, never loaded inside
+Consolidates four separate "written, builds clean, never loaded inside
 a real, booted ReactOS kernel via a real PnP-triggered install" gaps
-that accumulated across Phases 4, 5, and 7, each left in place as a
+that accumulated across Phases 4, 5, 7, and 8, each left in place as a
 documented pointer rather than a dead end:
 
 - [ ] `driver/ntbridge/reactos/ntbridge_pnp.c` (Phase 4) — a WDM bus
@@ -886,13 +1027,22 @@ documented pointer rather than a dead end:
       Real network adapter installation (Add Hardware wizard / Device
       Manager "Update Driver") is the specific, larger live-
       verification task this phase exists to attempt.
+- [ ] `driver/usb/reactos/ntusb.c` (Phase 8) — the WDM USB bridge bus
+      driver. Builds and links clean; never loaded inside ReactOS. Same
+      Root-enumeration-via-`ntusb.inf` install as `ntbridge_pnp.c`
+      needs, plus — the specific thing this phase would newly prove —
+      confirming a client driver (real or a small NTLinux-authored test
+      driver) can actually bind to its child PDO and have
+      `IOCTL_INTERNAL_USB_SUBMIT_URB` reach `NtusbProcessUrb` for real
+      (today only exercised via the test-only usermode IOCTL path, per
+      that file's README).
 
-All three need the same missing capability: driving ReactOS's actual
+All four need the same missing capability: driving ReactOS's actual
 PnP-triggered hardware-install UI flows live (not the legacy `sc
 start`/`sc create` shortcut `vsdev.c`'s verified path used, and not the
 Root-enumeration-via-`devcon` shortcut this project's ReactOS LiveCD
 environment doesn't ship) — worth attempting together, in one pass, once
-that automation exists, rather than three separate one-off efforts.
+that automation exists, rather than four separate one-off efforts.
 
 **Task breakdown:**
 
@@ -916,8 +1066,13 @@ that automation exists, rather than three separate one-off efforts.
       Windows network connection, then re-run the Phase 7 TAP round-trip
       test against the *real* miniport instead of the stand-in guest
       client.
+- [ ] `ntusb.c`: real Root-enumerated install via `ntusb.inf`, confirm
+      the child PDO's hardware ID is real enough for a client driver to
+      bind, then re-run the Phase 8 bulk-transfer round-trip test
+      against the *real* driver's `IOCTL_INTERNAL_USB_SUBMIT_URB` path
+      instead of the test-only IOCTL.
 
-**Success criterion:** all three drivers load via a real PnP-triggered
+**Success criterion:** all four drivers load via a real PnP-triggered
 install (not the legacy/manual shortcuts already verified) inside a
 real, booted ReactOS kernel, with `IRP_MN_START_DEVICE` observed firing
 from the real PnP manager in each case.
