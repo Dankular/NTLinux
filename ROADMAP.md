@@ -418,7 +418,11 @@ ReactOS — stated precisely below, not glossed over.**
       unbuilt source. **Still not loaded inside a running ReactOS
       kernel** — that's a different, remaining gap (needs driving
       ReactOS's actual boot/install process, not a toolchain gap) from
-      the "can't even compile" gap this correction resolves.
+      the "can't even compile" gap this correction resolves. **Moved to
+      Phase 14**, consolidated there with the same gap in `vsdev.c`'s
+      PnP path (Phase 5) and `ntnet.c` (Phase 7) — all three need the
+      same missing capability (a real PnP-triggered install flow), worth
+      attempting together rather than three separate one-off efforts.
 - [x] Honest stand-in guest test (`tests/reactos/
       ntbridge-guest-test.c`) — since the real ReactOS driver above
       can't be built here, this implements the *guest side of the
@@ -559,7 +563,10 @@ same file but hasn't been exercised live, same category of gap as
 `ntbridge_pnp.c`'s own unexercised PnP path), and "performs I/O through
 the host bridge" — `vsdev`'s loopback buffer is entirely local to the
 driver, not yet routed through `ntbridge`. Both are real next steps, not
-silently assumed done.
+silently assumed done. **The PnP-load gap is moved to Phase 14**,
+consolidated with the matching gap in `ntbridge_pnp.c` (Phase 4) and
+`ntnet.c` (Phase 7). The host-bridge-routing gap stays here, unmoved —
+it's `vsdev`-specific, not a PnP-install gap.
 
 See `driver/vsdev/README.md` for the full account, including the
 QMP-driven (screenshot + synthetic keyboard) automation method used to
@@ -713,7 +720,9 @@ inside a real, booted ReactOS kernel, behaves correctly — NDIS adapter
 installation (Add Hardware wizard / Device Manager "Update Driver") is
 a materially larger live-verification task than `driver/vsdev/`'s
 single `sc start`, out of reach for this pass's budget. Same honest
-boundary Phase 4 drew around `ntbridge_pnp.c`.
+boundary Phase 4 drew around `ntbridge_pnp.c`. **Moved to Phase 14**,
+consolidated with the matching gap in `ntbridge_pnp.c` (Phase 4) and
+`vsdev.c`'s PnP path (Phase 5).
 
 ---
 
@@ -851,6 +860,67 @@ image built by this project's own RosBE toolchain, with no desktop shell
 present — the actual "minimal bootable ReactOS image" Phase 4's success
 criterion originally called for, not the stock ISO stand-in it settled
 for.
+
+---
+
+## Phase 14 — Live PnP-triggered driver installation ⬜
+
+Consolidates three separate "written, builds clean, never loaded inside
+a real, booted ReactOS kernel via a real PnP-triggered install" gaps
+that accumulated across Phases 4, 5, and 7, each left in place as a
+documented pointer rather than a dead end:
+
+- [ ] `driver/ntbridge/reactos/ntbridge_pnp.c` (Phase 4) — a WDM bus
+      driver targeting Root-enumeration via `ntbridge.inf`. Never
+      loaded; also carries two known logic bugs (missing wait-for-
+      lower-IRP-completion, `IoCreateDevice` from DISPATCH_LEVEL) a real
+      load would force fixing.
+- [ ] `driver/vsdev/vsdev.c`'s **PnP path** (Phase 5) — `AddDevice` +
+      `vsdev.inf`'s Root-enumeration install. Only the *legacy*
+      `sc start` load path was verified live (real I/O, reproduced
+      twice); the PnP-triggered path shares the same device-creation
+      code (`VsdevCreateDeviceObject`) but has never actually been
+      exercised by a real PnP-enumerated install.
+- [ ] `driver/net/reactos/ntnet.c` (Phase 7) — the real NDIS 5.1
+      miniport. Builds and links clean; never loaded inside ReactOS.
+      Real network adapter installation (Add Hardware wizard / Device
+      Manager "Update Driver") is the specific, larger live-
+      verification task this phase exists to attempt.
+
+All three need the same missing capability: driving ReactOS's actual
+PnP-triggered hardware-install UI flows live (not the legacy `sc
+start`/`sc create` shortcut `vsdev.c`'s verified path used, and not the
+Root-enumeration-via-`devcon` shortcut this project's ReactOS LiveCD
+environment doesn't ship) — worth attempting together, in one pass, once
+that automation exists, rather than three separate one-off efforts.
+
+**Task breakdown:**
+
+- [ ] Work out how to trigger a real PnP install without `devcon.exe`
+      (not present on the ReactOS LiveCD environments used so far) —
+      likely means locating and scripting Device Manager's actual
+      "Add legacy hardware" / "Update Driver" wizard via the same
+      QMP-driven synthetic-keyboard automation `driver/vsdev/run-test.sh`
+      already established (`driver/cell/launcher/qmp_console.py`), a
+      materially longer, more failure-prone click sequence than
+      `vsdev.c`'s single `sc start` command.
+- [ ] `ntbridge_pnp.c`: real Root-enumerated install, confirm
+      `IRP_MN_START_DEVICE` actually fires, fix the two known bugs once
+      a real load surfaces them concretely, confirm PnP device-relations
+      (child PDO) reporting works against a real PnP manager.
+- [ ] `vsdev.c`: real Root-enumerated install via `vsdev.inf`, confirm
+      the PnP path produces the same working `\\.\NTLVSER0` I/O the
+      legacy path already proved.
+- [ ] `ntnet.c`: real Network Adapter install, confirm NDIS actually
+      accepts the OID surface and the adapter shows up as a usable
+      Windows network connection, then re-run the Phase 7 TAP round-trip
+      test against the *real* miniport instead of the stand-in guest
+      client.
+
+**Success criterion:** all three drivers load via a real PnP-triggered
+install (not the legacy/manual shortcuts already verified) inside a
+real, booted ReactOS kernel, with `IRP_MN_START_DEVICE` observed firing
+from the real PnP manager in each case.
 
 ---
 

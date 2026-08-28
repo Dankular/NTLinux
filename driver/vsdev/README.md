@@ -123,7 +123,9 @@ pass/fail state.
   an obvious equivalent. This means `IRP_MN_START_DEVICE` firing from a
   real PnP manager — part of Phase 5's stated success criterion — is
   still unverified, same category of gap as `ntbridge_pnp.c`'s own
-  unexercised PnP path.
+  unexercised PnP path. **Moved to `ROADMAP.md` Phase 14**, consolidated
+  with that same `ntbridge_pnp.c` gap and `ntnet.c`'s (Phase 7) — one
+  pass at real PnP-triggered installs, not three separate ones.
 - **No `ntbridge` routing.** `vsdev`'s loopback buffer is entirely
   local to the driver. "Performs I/O through the host bridge" (Phase
   5's full success criterion) means routing this (or a similar) device's

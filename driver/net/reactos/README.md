@@ -85,5 +85,9 @@ net/reactos/run-test.sh` and `ROADMAP.md` Phase 7 for that result. So
 the wire contract this driver needs to satisfy is real and tested; this
 file's own correctness against that contract, and its OID surface's
 completeness against a real NDIS wrapper's validation, are not, yet.
+**The live-load verification is moved to `ROADMAP.md` Phase 14**,
+consolidated with the same gap in `ntbridge_pnp.c` (Phase 4) and
+`vsdev.c`'s PnP path (Phase 5) — one pass at driving ReactOS's real
+PnP-triggered install flow, not three separate ones.
 
 See [`docs/ARCHITECTURE.md`](/docs/ARCHITECTURE.md) for full architectural context and [`ROADMAP.md`](/ROADMAP.md) for phase sequencing. Before implementing anything here, check whether the capability already exists upstream (Wine / Proton / ReactOS / Linux / Mesa / DXVK / vkd3d-proton / Gamescope / PipeWire / VFIO-IOMMU-KVM) per Rule 1 in `CLAUDE.md`.

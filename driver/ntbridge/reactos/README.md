@@ -50,7 +50,11 @@ ReactOS's real boot/install/driver-load process (copying the `.sys` in,
 registering it as a service, starting it), which this project hasn't
 attempted for *any* driver yet. Phase 5 takes a first run at exactly
 that with a much simpler, standalone test driver before circling back to
-this one — see `ROADMAP.md` Phase 5. Two real bugs are flagged directly
+this one — see `ROADMAP.md` Phase 5. **The live-load verification for
+this driver is consolidated in `ROADMAP.md` Phase 14**, alongside the
+same gap in `vsdev.c`'s PnP path (Phase 5) and `ntnet.c` (Phase 7) — one
+pass at driving ReactOS's real PnP-triggered install flow, not three
+separate ones. Two real bugs are flagged directly
 in this file's own comments for whenever that load-testing happens,
 since a real load is exactly what would surface them:
 
