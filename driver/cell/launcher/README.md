@@ -50,5 +50,15 @@ qcodes or whole strings, with US-QWERTY shift handling) so a script can
 actually drive ReactOS's text-mode dialogs and a `cmd.exe` session
 end-to-end, not just observe them. Every primitive in it was exercised
 live, repeatedly, verifying `vsdev.sys` — not written speculatively.
+Gained a `click` command (needs a real absolute-pointing device
+attached in the QEMU invocation — `-usb -device usb-tablet`, a PS/2
+mouse can't be driven this way) and a `dismiss-dialog` command during a
+later full-repo verification pass, after re-running `driver/vsdev/
+run-test.sh` surfaced a real, reproducible flake in its old fixed-sleep
+dialog-dismissal timing — see `driver/vsdev/README.md`'s "Known gaps"
+for the full diagnosis (found by actually re-running the script
+repeatedly with real screendumps, not by inspection) and the two real
+bugs `dismiss-dialog`'s own implementation went through before it held
+up under a fully unattended run.
 
 See [`docs/ARCHITECTURE.md`](/docs/ARCHITECTURE.md) for full architectural context and [`ROADMAP.md`](/ROADMAP.md) for phase sequencing. Before implementing anything here, check whether the capability already exists upstream (Wine / Proton / ReactOS / Linux / Mesa / DXVK / vkd3d-proton / Gamescope / PipeWire / VFIO-IOMMU-KVM) per Rule 1 in `CLAUDE.md`.

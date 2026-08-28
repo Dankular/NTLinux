@@ -1,3 +1,7 @@
+# Python bytecode cache - appears anywhere a .py file gets imported or
+# py_compile'd (tooling/, driver/cell/launcher/qmp_console.py, ...).
+__pycache__/
+
 # Staged by distro/image/build.sh; should be cleaned up automatically but
 # ignore it defensively in case a build is interrupted mid-way.
 /distro/image/airootfs/root/ntloader-src/

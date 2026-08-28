@@ -27,11 +27,11 @@ reflect what this adapter genuinely offers over `ntbridge`, and the
 traffic counters (`XmitOk`/`RcvOk`/`XmitError`/`RcvError`) are live
 counts updated by `NtnetSend`/`NtnetPollTimer`, not frozen placeholders.
 
-## Three real header bugs found and fixed, not worked around
+## Four real header bugs found and fixed, not worked around
 
 Building this against mingw-w64's bundled DDK (ReactOS's own
 `ndis.h`/`wdm.h`, repackaged — same toolchain `ntbridge_pnp.c`/
-`vsdev.c` use, still not RosBE) surfaced three genuine bugs in those
+`vsdev.c` use, still not RosBE) surfaced four genuine bugs in those
 headers, independent of any macro choice on this project's part
 (checked — present regardless of which `NDIS*_MINIPORT` version is
 selected):
@@ -54,6 +54,15 @@ selected):
    below Vista-level targets, which is exactly this driver's NDIS
    5.1/WinXP-level target (matching ReactOS's own reported NT 5.2
    compatibility).
+4. `ndis.h` unconditionally `#define`s `NDIS_PROTOCOL_ID_MAX` and
+   `NDIS_PROTOCOL_ID_MASK` (both `0x0F`) a second time, byte-for-byte
+   identical to what `ntddndis.h` (already `#include`d near the top of
+   the same file) already provides — the same "redundant #include
+   already covers this" shape as bug 1, just `#define` instead of
+   `typedef`. Found later, during a full-repo rebuild sweep
+   (ROADMAP.md's Phase 9/10 verification pass) rather than while
+   originally building this file — a real, reproducible finding from
+   actually re-running `make`, not from inspection.
 
 `prepare-ndis-header.sh` generates locally-patched copies of both
 headers into `./build/` — **does not touch the system-installed

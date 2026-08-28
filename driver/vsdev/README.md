@@ -110,7 +110,13 @@ Loopback round-trip: PASS
 Screenshots in `screenshots/` and embedded in `ROADMAP.md` Phase 5.
 `run-test.sh` automates this exact sequence end-to-end and was run
 successfully in this same session — see its own output for the current
-pass/fail state.
+pass/fail state. Reconfirmed in a later full-repo verification pass
+(ROADMAP.md's Phase 9/10 sweep) with the exact same real output shown
+above, byte for byte — including "Hello NTLinux Phase5" and a real
+`CreateFile` handle value — genuine reproduction, not a cached/stale
+result. `run-test.sh` itself needed real fixes during that same pass to
+get back to reliable (see "Known gaps" below); the driver's own
+behavior never changed.
 
 ## Known gaps, stated precisely
 
@@ -132,10 +138,36 @@ pass/fail state.
   I/O through `driver/ntbridge/` back to Linux — a real next step, not
   attempted here on purpose (Rule 2: prove loading + I/O works in
   isolation first).
-- `run-test.sh`'s sleep-based timing is generous but not adaptive — a
-  slower host could still time out before reaching the desktop. A
-  screendump-polling loop (retry until a known-good frame appears)
-  would be more robust; not done here since fixed, measured timings
-  already proved reliable across multiple real runs in this session.
+- ~~`run-test.sh`'s sleep-based timing is generous but not adaptive~~ —
+  **fixed** during a later full-repo verification pass (ROADMAP.md's
+  Phase 9/10 sweep), and worth recording exactly how, since it was a
+  real, reproducible flake, not a hypothetical one: re-running this
+  script during that sweep failed 3 times in a row with an empty
+  `A:\RESULT.TXT`. Diagnosis (via manual, deliberately-paced QMP
+  screendumps at each step, not guessing) found the LiveCD's
+  language-selection dialog sometimes still open when the old fixed
+  `sleep 90; ret` sequence assumed it long dismissed — real TCG
+  boot-speed variance, host-load-dependent. Fixed in
+  `driver/cell/launcher/qmp_console.py`'s new `dismiss-dialog` command:
+  polls a screenshot pixel that's reliably part of the dialog body
+  (a color the plain desktop background never shows) and sends `ret`
+  on every poll where it's still detected, only proceeding once
+  background reads back for several consecutive polls — adaptive, not
+  a wider blind guess. Two more real bugs surfaced only by re-running
+  the *fully automated* script (not caught by careful manual step-by-
+  step testing, which paces itself slower): (1) polling could declare
+  "dismissed" before the dialog had even rendered yet, since "never
+  appeared" and "appeared then dismissed" both read as background at
+  that pixel — fixed by requiring the dialog color to have actually
+  been observed at least once first; (2) even then, 2 consecutive
+  background reads wasn't enough confirmation (plausibly a repaint
+  flicker during a transition to a second, build-specific dialog) —
+  fixed by requiring 5. Also added a real USB tablet device
+  (`-usb -device usb-tablet`) and a `click` command so a mouse click on
+  empty desktop space can force keyboard focus back onto the desktop
+  before the icon-search-by-letter step, regardless of what had focus
+  after the dialog closed (a PS/2 mouse can't be driven this way — QMP's
+  absolute positioning needs a real absolute-pointing device attached).
+  Reproduced clean twice in a row after all three fixes landed.
 
 See [`docs/ARCHITECTURE.md`](/docs/ARCHITECTURE.md) for full architectural context and [`ROADMAP.md`](/ROADMAP.md) for phase sequencing. Before implementing anything here, check whether the capability already exists upstream (Wine / Proton / ReactOS / Linux / Mesa / DXVK / vkd3d-proton / Gamescope / PipeWire / VFIO-IOMMU-KVM) per Rule 1 in `CLAUDE.md`.

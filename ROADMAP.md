@@ -572,6 +572,19 @@ See `driver/vsdev/README.md` for the full account, including the
 QMP-driven (screenshot + synthetic keyboard) automation method used to
 drive the ReactOS console for this verification.
 
+**Reconfirmed in a later full-repo verification pass** (ROADMAP.md's
+Phase 9/10 sweep): re-running `run-test.sh` reproduced the exact same
+real result byte-for-byte (`Loopback round-trip: PASS`, the same
+"Hello NTLinux Phase5" content) — the driver's behavior never changed.
+Getting there required real fixes to `run-test.sh` itself, though: it
+failed 3 times in a row with an empty result before the actual bug
+(a fixed-timing dialog-dismissal sequence that could miss the LiveCD's
+language dialog on a slower boot) was found and fixed — see
+`driver/vsdev/README.md`'s "Known gaps" for the full diagnosis and the
+two further real bugs the fix itself went through before it held up
+under a fully unattended run. Stated plainly: the test automation had
+bugs the driver didn't.
+
 ---
 
 ## Phase 6 — VFIO hardware passthrough ⬜ (explicitly deferred — see below, not silently skipped)

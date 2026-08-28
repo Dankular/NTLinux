@@ -50,23 +50,50 @@ qemu-system-x86_64 \
     -drive file="$FLOPPY",if=floppy,format=raw \
     -boot d \
     -display none -vga std \
+    -usb -device usb-tablet \
     -serial file:"$SERIAL" \
     -qmp unix:"$QMPSOCK",server,nowait \
     -no-reboot \
     > "$WORKDIR/qemu.log" 2>&1 &
 QEMU_PID=$!
 
-# Timings below are generous multiples of what the manual verification
-# run actually took (ROADMAP.md Phase 5) - this is a debug/dev-build x64
-# LiveCD under TCG software emulation, genuinely slow to reach a desktop.
-echo "=== run-test.sh: waiting for boot to reach the LiveCD language dialog (~90s) ==="
-sleep 90
-"$QMP" "$QMPSOCK" sendkey ret   # accept language dialog defaults
-sleep 15
-"$QMP" "$QMPSOCK" sendkey ret   # "Run ReactOS Live CD" (if this build shows the chooser)
+# Real, reproducible flake found and fixed by actually re-running this
+# script repeatedly, not by inspection: a fixed "sleep 90; ret" to
+# dismiss the LiveCD's language-selection dialog assumed one particular
+# boot's observed timing. Real TCG software-emulation boot speed varies
+# enough between runs (host load-dependent) that a fixed offset
+# sometimes fires before the dialog has even rendered (a harmless
+# no-op - the dialog is then still open when the rest of this script
+# assumes a plain desktop) and sometimes fires too late, after
+# something else has focus. Confirmed directly: a screendump taken at
+# the old fixed offset, on a run that then failed, showed the language
+# dialog still sitting there waiting - the "ret" meant to dismiss it
+# had already fired into nothing minutes earlier.
+#
+# dismiss-dialog (driver/cell/launcher/qmp_console.py) is the adaptive
+# fix: polls a screenshot pixel that's reliably part of the dialog body
+# (212,208,200 - a color the plain desktop background, 58,110,165,
+# never shows) and sends `ret` on every poll where it's still detected,
+# only proceeding once the background color reads back for two
+# consecutive polls. Idempotent and safe to poll for a while - a `ret`
+# sent while the dialog's default "Next" button already has focus just
+# advances it once, and subsequent polls see the background and stop.
+echo "=== run-test.sh: waiting for and dismissing the LiveCD language dialog (adaptive, up to 200s) ==="
+"$QMP" "$QMPSOCK" dismiss-dialog 0.3125 0.5 58 110 165 --timeout 200 --interval 5 || {
+    "$QMP" "$QMPSOCK" screendump "$WORKDIR/dialog-timeout.ppm"
+    echo "run-test.sh: FAIL - language dialog never cleared; see $WORKDIR/dialog-timeout.ppm"
+    exit 1
+}
 
-echo "=== run-test.sh: waiting for desktop (~20s) ==="
-sleep 20
+echo "=== run-test.sh: letting the desktop settle (~8s) ==="
+sleep 8
+# A left-click on an empty patch of desktop (using a real USB tablet
+# device for absolute positioning, added to the QEMU invocation above -
+# a PS/2 mouse can't be driven this way) forces keyboard focus onto the
+# desktop regardless of what has focus after the dialog closes, making
+# the icon-search-by-letter step below reliable.
+"$QMP" "$QMPSOCK" click 0.85 0.6   # empty desktop area, right of the icon column
+sleep 1
 "$QMP" "$QMPSOCK" sendkey c     # jump to "Command Prompt" desktop icon
 sleep 2
 "$QMP" "$QMPSOCK" sendkey ret   # launch it

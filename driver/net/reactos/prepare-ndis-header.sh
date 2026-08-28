@@ -22,6 +22,16 @@
 #    treats it as 0 and the guard is always true, referencing a type
 #    that's genuinely undefined below Vista-level targets (which is
 #    exactly this driver's NDIS 5.1/WinXP-level target - see ntnet.c).
+# 4. ddk/ndis.h unconditionally #defines NDIS_PROTOCOL_ID_MAX and
+#    NDIS_PROTOCOL_ID_MASK (both 0x0F) a second time, byte-for-byte
+#    identical to definitions ntddndis.h (which ndis.h itself already
+#    #includes near the top of the file) already provides - the same
+#    "redundant #include already covers this" shape as bug 1, just
+#    #define instead of typedef. Found during a later full-repo rebuild
+#    sweep (ROADMAP.md's Phase 9/10 verification pass), not present in
+#    the original three found while building ntnet.c the first time -
+#    real, reproducible, caught by actually re-running `make`, not by
+#    inspection.
 #
 # Does NOT touch the system-installed headers - copies them, patches the
 # copies, and driver/net/reactos/Makefile puts ./build/ first on the
@@ -50,6 +60,7 @@ awk '
     { print }
 ' "$DDK_DIR/ndis.h" \
     | sed 's/IN NDIS_HANDLE  MiniportAdapterHandle$/IN NDIS_HANDLE  MiniportAdapterHandle,/' \
+    | sed '/^#define\tNDIS_PROTOCOL_ID_MAX            0x0F$/d; /^#define\tNDIS_PROTOCOL_ID_MASK           0x0F$/d' \
     > "$BUILD_DIR/ndis.h"
 
 # Fix 3, applied to a copy of wdm.h: the misspelled guard only ever
