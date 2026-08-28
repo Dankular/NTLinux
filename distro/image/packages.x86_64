@@ -96,3 +96,8 @@ icoutils
 # Chaotic-AUR-style package repo baked into pacman.conf, or (b) to leave
 # them to the user's package manager post-boot. Phase 0 ships without them
 # pre-baked; tracked as a Phase 0 follow-up in ROADMAP.md.
+
+# --- Network security (section 53.4, ROADMAP.md Phase 15) ---
+# wg/wg-quick — the kernel WireGuard module ships with `linux` already
+# (above), this is just the userspace CLI on top of it.
+wireguard-tools

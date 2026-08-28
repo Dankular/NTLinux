@@ -874,11 +874,90 @@ instead of three.
 
 ---
 
-## Phase 9 — Modern ReactOS driver compatibility ⬜
+## Phase 9 — Modern ReactOS driver compatibility 🟨 (gap probe built and run; the underlying upstream work is real, separate, out of reach in this sandbox)
 
 Upstream work on KMDF, newer WDM, newer NT exports, modern NDIS, PnP, power,
 memory management, security. Maintain conformance tests against documented
 Windows behavior.
+
+**Why this phase is scoped the way it is:** the text above is a large,
+open-ended upstream research program, not a single boundable task —
+genuinely different in kind from Phases 4-8's "write a driver, verify
+it live" shape. Rather than write speculative "future work" prose for
+it, this phase's real deliverable is the concrete prerequisite: knowing
+precisely what this project's *own* DDK toolchain already supports for
+each named facility, checked by actually running probes against it, not
+assumed from ReactOS's documented NT-version target.
+
+### `tooling/compat-db/ddkgap/` — the gap probe
+
+Same family as `ntexports/` (user-mode DLL export gaps, static) and
+`ntprobe/` (live Windows-side NT behavior, dynamic) — this is the
+kernel-mode counterpart, checking two independently real things per
+curated symbol: `abi_present` (a real `nm` check against
+`libntoskrnl.a`/`libhal.a`/`libndis.a`) and `header_declared` (a real
+recursive grep across the actual installed DDK headers), plus a
+separate present/absent check for KMDF as a whole framework. See
+`tooling/compat-db/ddkgap/README.md` for the full account, including
+its stated limitations (a curated, representative symbol list, not
+exhaustive; a textual header check, not a compile probe).
+
+### Real results, this session
+
+```
+PnP: IoRegisterPlugPlayNotification, IoUnregisterPlugPlayNotificationEx,
+     IoReportTargetDeviceChangeAsynchronous, IoInvalidateDeviceRelations — all full
+Power: PoRegisterPowerSettingCallback, PoUnregisterPowerSettingCallback,
+       PoStartNextPowerIrp — all full
+Memory management: ExAllocatePoolWithTag full, MmProtectMdlSystemAddress full,
+                    KeInitializeGuardedMutex full, ExAllocatePool2 absent
+Security: ObRegisterCallbacks/ObUnRegisterCallbacks/CmRegisterCallbackEx full,
+          SeAccessCheckEx abi-only (header gap),
+          PsSetCreateProcessNotifyRoutineEx2 absent
+Interrupts: IoConnectInterruptEx, IoDisconnectInterruptEx — both full
+Filter Manager: FltRegisterFilter absent
+NDIS 6.x: NdisMRegisterMiniportDriver, NdisMSetMiniportAttributes,
+          NdisMIndicateReceiveNetBufferLists, NdisAllocateNetBufferListPool
+          — all abi-only (header gap)
+KMDF: not present in this toolchain at all (no wdf*.h, no Wdf01000/libwdf*.a)
+```
+
+**What this actually says, precisely:** the WDM-level PnP/power/
+interrupt/most security-and-memory-management surface up through
+roughly Windows 7/8 is genuinely already there — header and ABI both,
+usable today with zero toolchain changes, further ahead of
+ARCHITECTURE.md's stated "NT 5.2/Server 2003-ish" ReactOS baseline than
+assumed going in. Three real, narrow, distinct gaps came out of this,
+not one vague "needs modernizing":
+
+1. **NDIS 6.x has real ABI but no header declarations** — the same
+   reason `driver/net/reactos/ntnet.c` specifically targeted the older
+   NDIS 5.1 surface (see that file's own header comment) is now a
+   documented, generalizable finding, not an isolated one-off. The
+   narrowest gap here — hand-declaring the missing prototypes (same
+   technique `ntprobe/` already used for a few NT structures, ADR-0006)
+   would unlock NDIS 6.x miniports against this exact toolchain with no
+   new import library needed. Real, scoped follow-up work.
+2. **KMDF is entirely absent**, headers and runtime library both. Not a
+   header-patching job — needs `Wdf01000.sys`'s import surface and
+   `wdf.h`/`wdfdriver.h`/etc. sourced from somewhere (ReactOS's own
+   tree, if it carries them) first. Comparable in kind to the RosBE/
+   Wine-source-build items Phases 2/12/13 already deferred for the same
+   "needs a much bigger toolchain component this sandbox can't provide"
+   reason — genuinely out of reach here, not a gap in effort.
+3. **The truly recent (Windows 10-era) additions are absent**
+   (`ExAllocatePool2`, `PsSetCreateProcessNotifyRoutineEx2`,
+   `FltRegisterFilter`) — expected, not a surprise, and outside this
+   project's near-term scope per CLAUDE.md anyway.
+
+**What Phase 9 does not yet do:** any actual upstream patch to ReactOS
+or conformance test running against a real (or even ReactOS-booted)
+kernel exercising these APIs — this phase's real deliverable is
+knowing precisely where such work would start, verified rather than
+guessed, not the upstream work itself. Genuinely comparable to how
+Phase 13 stands relative to actually building ReactOS from source: a
+scoped, honest "here is exactly what's missing and why" rather than an
+attempt at the full underlying task in one pass.
 
 ---
 
