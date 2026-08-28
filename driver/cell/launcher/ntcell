@@ -35,6 +35,20 @@
 #                     pass/fail version of this.
 set -euo pipefail
 
+# Windows-host detection, found live rather than assumed: on a real
+# Windows host (MSYS/Git-Bash), the Python actually on PATH there had no
+# socket.AF_UNIX at all (a real AttributeError, not a permissions/path
+# issue) - unix-socket QMP/monitor endpoints are simply not usable with
+# that interpreter. On such a host, use TCP loopback for QMP/monitor
+# instead; qmp_screendump.py/qmp_console.py both understand a
+# "tcp:HOST:PORT" endpoint alongside the original unix-socket path (see
+# their own doc comments for why). Linux behavior (unix sockets) is
+# completely unchanged.
+IS_WINDOWS_HOST=0
+case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) IS_WINDOWS_HOST=1 ;;
+esac
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CELL_DIR="$(cd "$HERE/.." && pwd)"
 IMAGES_DIR="$CELL_DIR/images"
@@ -90,9 +104,21 @@ cmd_boot_reactos() {
         exit 1
     fi
 
-    local monitor_sock qmp_sock serial_log
-    monitor_sock="$(mktemp -u /tmp/ntcell-monitor.XXXXXX.sock)"
-    qmp_sock="$(mktemp -u /tmp/ntcell-qmp.XXXXXX.sock)"
+    local monitor_sock qmp_sock monitor_ep qmp_ep serial_log
+    if [ "$IS_WINDOWS_HOST" = "1" ]; then
+        # Two fixed local high ports - fine for the single local cell
+        # this script ever runs at a time; not made configurable since
+        # nothing here runs multiple cells concurrently yet.
+        monitor_sock="tcp:127.0.0.1:45001"
+        qmp_sock="tcp:127.0.0.1:45002"
+        monitor_ep="${monitor_sock},server,nowait"
+        qmp_ep="${qmp_sock},server,nowait"
+    else
+        monitor_sock="$(mktemp -u /tmp/ntcell-monitor.XXXXXX.sock)"
+        qmp_sock="$(mktemp -u /tmp/ntcell-qmp.XXXXXX.sock)"
+        monitor_ep="unix:${monitor_sock},server,nowait"
+        qmp_ep="unix:${qmp_sock},server,nowait"
+    fi
     serial_log="$(mktemp /tmp/ntcell-reactos-serial.XXXXXX.log)"
 
     local -a args=(
@@ -100,8 +126,8 @@ cmd_boot_reactos() {
         -cdrom "$iso" -boot d
         -display none -vga std
         -serial "file:${serial_log}"
-        -monitor "unix:${monitor_sock},server,nowait"
-        -qmp "unix:${qmp_sock},server,nowait"
+        -monitor "${monitor_ep}"
+        -qmp "${qmp_ep}"
         -no-reboot
     )
     if [ "$attach_bridge" = "1" ]; then
@@ -127,7 +153,9 @@ cmd_boot_reactos() {
     fi
 
     echo "ntcell: serial console log at $serial_log"
-    rm -f "$monitor_sock" "$qmp_sock"
+    if [ "$IS_WINDOWS_HOST" != "1" ]; then
+        rm -f "$monitor_sock" "$qmp_sock"
+    fi
 }
 
 cmd_boot_testguest() {

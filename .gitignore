@@ -69,6 +69,13 @@ __pycache__/
 # don't vendor - ADR-0002/Rule 17), same as the release ISOs above.
 /driver/cell/images/reactos-livecd-*-x64-*.iso
 
+# ntcell boot-reactos --screenshot output and QMP screendump intermediates
+# (raw PPM before PNG conversion) land here during local runs - not
+# committed. Curated, final evidence lives in driver/cell/screenshots/
+# instead (same pattern as driver/vsdev/screenshots/).
+/driver/cell/images/*.ppm
+/driver/cell/images/*.png
+
 # Phase 15: WireGuard profiles carry real account-tied private keys - never
 # vendor a real one into the repo, defensively ignore any dropped next to
 # the selector script during local testing.

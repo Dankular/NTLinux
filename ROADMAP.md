@@ -458,6 +458,83 @@ kind of thing that would surface there) — that needs driving ReactOS's
 real boot/install/driver-load process, which Phase 5 takes a first,
 simpler run at with a standalone test driver before this one.
 
+### Re-verified on a genuinely different host: real QEMU on Windows, not just the original Linux/TCG sandbox
+
+Every `ntcell`/QMP result above was first established in this
+project's original Linux development sandbox. This session ran on a
+real Windows 11 host that turned out to already have a full, real QEMU
+11.0.0 install (`C:\Program Files\qemu`) — checked directly rather than
+assumed absent, per Rule 1. Fetched a fresh ReactOS x64 nightly LiveCD
+(`driver/cell/images/fetch-reactos-x64-nightly.sh`, unmodified) and ran
+`ntcell boot-reactos` against it on this host, for real.
+
+**One real, narrow, cross-platform bug found and fixed, not worked
+around:** the Python actually present on this Windows host has no
+`socket.AF_UNIX` at all (`AttributeError`, not a path/permissions
+issue) — `qmp_screendump.py`/`qmp_console.py`'s unix-socket QMP
+connection is simply unusable there. Fixed narrowly: `ntcell` now
+detects a Windows host (MSYS/Git-Bash/Cygwin `uname`) and uses a TCP
+loopback QMP/monitor endpoint instead of a unix socket in that case
+only; both Python helpers now accept either a `tcp:HOST:PORT` or the
+original unix-socket-path endpoint. Linux behavior (unix sockets) is
+completely unchanged — this is a real portability fix, not a
+Windows-only hack bolted on top.
+
+**Verified live, screenshots committed as real evidence** (same
+standard `driver/vsdev/screenshots/` already established for this
+project):
+
+![ReactOS x64 nightly booting under real QEMU on Windows - PnP device install in progress](screenshots/windows-qemu-boot-progress.png)
+
+A genuine mid-boot frame — ReactOS actually enumerating/installing
+devices, not a static splash. Continuing to boot reaches the real
+LiveCD language-selection dialog, the same screen this project's
+original Linux sandbox first captured:
+
+![ReactOS LiveCD language dialog, real QEMU on Windows](screenshots/windows-qemu-livecd-dialog.png)
+
+Went further than any previous pass: kept this QEMU instance alive and
+drove it interactively over the live TCP QMP connection with
+`qmp_console.py click`/`sendkey`, the same primitives `driver/vsdev/
+run-test.sh` already established for Phase 5. A synthetic click landed
+precisely on the dialog's "Next" button (visible focus rectangle,
+cursor exactly on target):
+
+![Next button focused after a real synthetic QMP click](screenshots/windows-qemu-livecd-dialog-clicked.png)
+
+Sending a synthetic Enter key genuinely advanced the wizard to a real,
+fully rendered ReactOS desktop — taskbar, Start button, system tray
+clock, desktop icons:
+
+![A real, live ReactOS x64 desktop, reached via synthetic QMP input on this Windows host](screenshots/windows-qemu-desktop-live.png)
+
+**An honest gap, not glossed over:** attempted to go one step further
+and open the desktop's Command Prompt icon (double-click, then a
+select-then-Enter fallback) to get a live `cmd.exe` session the way
+Phase 5's driver test does. Both attempts only *selected* the icon —
+no window opened in either try, in the time observed:
+
+![Command Prompt icon selected but not launched - a real, unresolved finding](screenshots/windows-qemu-desktop-cmd-icon-selected.png)
+
+Not chased further this pass (budget) — plausibly the same class of
+desktop-focus/timing flake `driver/vsdev/README.md`'s "Known gaps"
+already documents for `dismiss-dialog`, not investigated to a root
+cause here. Also not attempted on this host: `driver/vsdev/run-test.sh`
+itself (needs `x86_64-w64-mingw32-gcc` and `mtools`, both confirmed
+absent from this Windows host — a real, separate toolchain gap,
+correctly left alone rather than papered over by installing a new
+compiler unprompted).
+
+**What this proves, stated precisely:** the `ntcell` launcher, real
+ReactOS boot, and QMP-driven synthetic input are now confirmed to work
+on a second, genuinely different host/OS/QEMU-build combination, not
+just the one sandbox that originally verified them — with one real,
+narrow, now-fixed cross-platform bug found along the way. It does not
+newly prove anything about `ntbridge_pnp.c` or Phase 14's PnP-install
+flows specifically; the Command Prompt gap above shows real
+desktop-level UI automation on Windows still has an unresolved rough
+edge.
+
 ---
 
 ## Phase 5 — First Windows driver 🟨 (loads and performs real I/O, verified live; PnP-triggered load and ntbridge routing not yet attempted)
