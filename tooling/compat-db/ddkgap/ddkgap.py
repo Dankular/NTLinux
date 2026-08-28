@@ -101,12 +101,26 @@ KMDF_HEADER_GLOBS = ("wdf*.h",)
 KMDF_LIB_GLOBS = ("libwdf*.a", "*Wdf01000*")
 
 # Same whole-framework shape as KMDF, for Phase 11 (ROADMAP.md, ADR-0003):
-# the kernel-mode WDDM/DXGKRNL miniport interface (dxgkrnl.h, d3dkmthk.h,
-# the D3DKMT* usermode-to-kernel escape surface) is a distinct thing from
-# the *usermode* Direct3D headers (d3d9.h/d3d11.h/d3d12.h etc.) this
-# toolchain already ships in abundance - this checks specifically for the
-# kernel-mode side, which a driver-cell-hosted WDDM miniport would need.
-WDDM_HEADER_GLOBS = ("dxgkrnl*.h", "d3dkmthk*.h", "d3dukmdt*.h", "kmddod*.h")
+# the kernel-mode WDDM/DXGKRNL miniport interface (dispmprt.h/d3dkmddi.h/
+# d3dkmdt.h/d3dukmdt.h - real filenames, confirmed by actually fetching
+# Microsoft's own WDK, not guessed) is a distinct thing from the
+# *usermode* Direct3D headers (d3d9.h/d3d11.h/d3d12.h etc.) this
+# toolchain already ships in abundance - this checks specifically
+# whether mingw-w64 *pre-packages* the kernel-mode side.
+#
+# It doesn't, and this check still correctly reports that - but "not
+# pre-packaged in mingw-w64" is not the same finding as "doesn't exist
+# in this toolchain's reach" the way this comment's own earlier version
+# implied. driver/gpu/fetch-wdk-headers.sh fetches the real headers
+# live from Microsoft's official NuGet packages (never vendored, see
+# that script's own header comment for why) and driver/gpu/
+# wddm-probe.c demonstrates they compile against this same DDK
+# toolchain with a few narrow patches - real, live-verified, not
+# reflected by this static presence check alone. See driver/gpu/
+# README.md for the full corrected account, including one genuine,
+# unresolved cross-compiler ABI finding that check doesn't surface
+# either.
+WDDM_HEADER_GLOBS = ("dispmprt.h", "d3dkmddi.h", "d3dkmdt.h", "d3dukmdt.h", "dxgkrnl*.h", "d3dkmthk*.h")
 WDDM_LIB_GLOBS = ("*dxgkrnl*",)
 
 
@@ -216,22 +230,34 @@ def print_summary(report: dict) -> None:
     if k["available"]:
         print(f"  [OK  ] present — headers: {k['headers_found']}, libs: {k['libs_found']}")
     else:
-        print("  [MISS] not present in this toolchain at all — no wdf*.h, no Wdf01000/libwdf*.a."
-              " Any KMDF driver work needs this brought in first (real follow-up, not a header patch).")
+        print("  [GAP ] not pre-packaged by mingw-w64 - same corrected framing as the WDDM"
+              " check below: the real KMDF headers (c/Include/wdf/kmdf/1.11/*.h - wdf.h,"
+              " wdfdevice.h, and friends) are real and present in the same official Microsoft"
+              " WDK NuGet package driver/gpu/fetch-wdk-headers.sh already fetches for WDDM."
+              " Found live while investigating that (same package, same 'not pre-packaged here"
+              " != does not exist' correction), but NOT yet compile-tested against this"
+              " toolchain the way the WDDM headers were - stated honestly as found-not-verified,"
+              " not claimed complete.")
 
     w = report["wddm"]
     print(f"\nWDDM/DXGKRNL (kernel-mode graphics miniport interface, Phase 11/ADR-0003):")
     if w["available"]:
         print(f"  [OK  ] present — headers: {w['headers_found']}, libs: {w['libs_found']}")
     else:
-        print("  [MISS] not present in this toolchain at all — no dxgkrnl.h/d3dkmthk.h/etc., no"
-              " dxgkrnl import library. Distinct from the usermode Direct3D headers (d3d9.h,"
-              " d3d11.h, d3d12.h, ...) this toolchain ships in abundance - those are for"
-              " applications *consuming* Direct3D, not for a kernel-mode driver *implementing* a"
-              " WDDM miniport. See ROADMAP.md Phase 11 for the full picture: ReactOS itself has"
-              " only an early, display-only-2D, no-3D-acceleration experimental Dxgkrnl as of"
-              " its October 2025 blog post — this toolchain's own DDK package hasn't caught up"
-              " to even that yet.")
+        print("  [GAP ] not pre-packaged by mingw-w64 - but NOT the same as 'doesn't exist':"
+              " the real Microsoft WDK headers (dispmprt.h/d3dkmddi.h/d3dkmdt.h/d3dukmdt.h) are"
+              " real, official, and fetch cleanly from Microsoft's own NuGet packages"
+              " (driver/gpu/fetch-wdk-headers.sh - never vendored here, their EULA forbids"
+              " redistribution). A real DriverEntry referencing the real DXGKRNL_INTERFACE"
+              " contract compiles against them on this same toolchain, live-verified"
+              " (driver/gpu/wddm-probe.c) - with one genuine, unresolved finding: a Microsoft-"
+              " authored static_assert checking DXGK_CHILD_CAPABILITIES's byte layout fails"
+              " under GCC/mingw-w64 (a real cross-compiler ABI mismatch, not a spurious header"
+              " bug). See driver/gpu/README.md for the full, corrected account. Distinct from"
+              " the usermode Direct3D headers (d3d9.h, d3d11.h, d3d12.h, ...) this toolchain"
+              " already ships in abundance - those don't help a kernel-mode WDDM miniport at"
+              " all. ReactOS's own DXGKRNL support is separately still early/2D-only (Oct 2025"
+              " blog post) - a real, different blocker from this toolchain question.")
 
 
 def main() -> int:

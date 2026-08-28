@@ -951,13 +951,20 @@ not one vague "needs modernizing":
    technique `ntprobe/` already used for a few NT structures, ADR-0006)
    would unlock NDIS 6.x miniports against this exact toolchain with no
    new import library needed. Real, scoped follow-up work.
-2. **KMDF is entirely absent**, headers and runtime library both. Not a
-   header-patching job — needs `Wdf01000.sys`'s import surface and
-   `wdf.h`/`wdfdriver.h`/etc. sourced from somewhere (ReactOS's own
-   tree, if it carries them) first. Comparable in kind to the RosBE/
-   Wine-source-build items Phases 2/12/13 already deferred for the same
-   "needs a much bigger toolchain component this sandbox can't provide"
-   reason — genuinely out of reach here, not a gap in effort.
+2. **KMDF is absent from mingw-w64's packaging — corrected by Phase 11's
+   research, not left as originally stated.** This entry originally said
+   KMDF headers were "entirely absent" and needed sourcing "from
+   somewhere." While investigating Phase 11's WDDM headers, the real
+   KMDF headers (`c/Include/wdf/kmdf/1.11/wdf.h` and friends) turned up
+   live in the exact same official Microsoft WDK NuGet package
+   `driver/gpu/fetch-wdk-headers.sh` already fetches — real, present,
+   not sourced from ReactOS's tree as guessed here. Not yet
+   compile-verified against this toolchain the way the WDDM headers
+   were (`driver/gpu/wddm-probe.c`) — stated as found, not solved. See
+   `ROADMAP.md` Phase 11 and `docs/DECISIONS.md` ADR-0003's second
+   correction for the fuller account of why this project's first pass
+   at "is X present in this toolchain" undersold what's actually
+   reachable, here and for WDDM alike.
 3. **The truly recent (Windows 10-era) additions are absent**
    (`ExAllocatePool2`, `PsSetCreateProcessNotifyRoutineEx2`,
    `FltRegisterFilter`) — expected, not a surprise, and outside this
@@ -1072,7 +1079,7 @@ entirely).
 
 ---
 
-## Phase 11 — Native Windows GPU driver hosting (research) 🟨 (real, sourced research complete for what a "research milestone" phase calls for; implementation remains categorically out of reach — no VFIO/IOMMU in any sandbox this project has run in, no WDDM/DXGKRNL surface in this toolchain, and ReactOS's own upstream WDDM work is early/2D-only)
+## Phase 11 — Native Windows GPU driver hosting (research) 🟨 (real, sourced research; the DDK-toolchain blocker was found to be substantially wrong and corrected live — the real WDDM/DXGKRNL headers exist, fetch from Microsoft's own WDK, and compile against this toolchain; two blockers remain real: ReactOS's own WDDM work is early/2D-only, and no VFIO/IOMMU exists in any sandbox this project has run in)
 
 Not an MVP dependency (`docs/ARCHITECTURE.md` section 30) — the default
 gaming path stays DXVK/vkd3d-proton on Mesa/Vulkan (section 47), and this
@@ -1136,20 +1143,48 @@ phase actually cares about runs yet. The blog is explicit the whole
 effort further depends on ReactOS's legacy XDDM/`CDD.dll` stack being
 solid first — a second, upstream-side dependency chain of its own.
 
-**2. This project's own DDK toolchain — zero WDDM/DXGKRNL surface at
-all, checked directly, not assumed.** `tooling/compat-db/ddkgap/` (built
-for Phase 9) now carries a standing WDDM/DXGKRNL check alongside its
-KMDF one: no `dxgkrnl.h`/`d3dkmthk.h`/`d3dukmdt*.h`/`kmddod*.h`, no
-`dxgkrnl` import library, anywhere under mingw-w64's packaged headers —
-confirmed by direct search, re-runnable, not a one-off finding. Notably
-distinct from this same toolchain's abundant *usermode* Direct3D headers
-(`d3d9.h` through `d3d12.h`) — those are for applications consuming
-Direct3D (games, DXVK's own host side), not for a kernel-mode driver
-implementing a WDDM miniport, and their presence doesn't help here at
-all. Even if ReactOS's upstream WDDM work matures past blocker 1, this
-project would still need to source these kernel-mode headers from
-ReactOS's own in-progress tree (or a compatible WDK subset) before
-writing a single line of cell-side integration code.
+**2. This project's own DDK toolchain — corrected live, a real mistake
+caught and fixed, not just re-stated more carefully.** This phase
+originally claimed "zero WDDM/DXGKRNL surface at all... confirmed by
+direct search, re-runnable, not a one-off finding" — checking only
+whether mingw-w64 *pre-packages* these headers (it doesn't) and treating
+that as the whole answer. It wasn't: the real Microsoft WDK headers a
+WDDM display miniport driver needs (`dispmprt.h`, `d3dkmddi.h`,
+`d3dkmdt.h`, `d3dukmdt.h`) are real, official, and fetch cleanly from
+Microsoft's own NuGet packages (`Microsoft.Windows.WDK.x64` +
+`Microsoft.Windows.SDK.CPP` — a real three-package dependency chain,
+confirmed by downloading and inspecting each package's own `.nuspec`).
+`driver/gpu/fetch-wdk-headers.sh` fetches them (never vendored — their
+EULA explicitly prohibits redistribution, read directly, not assumed);
+`driver/gpu/wddm-probe.c` is a real `DriverEntry` referencing the real
+`DXGKRNL_INTERFACE`/`DxgkInitialize` contract, and it **compiles**
+against this project's existing mingw-w64 DDK toolchain — live-verified,
+not asserted — with a small number of narrow, documented patches (two
+SAL-annotation no-op macros, two ordinary includes), the exact same
+technique `driver/net/reactos/prepare-ndis-header.sh` already
+established for the NDIS header bugs.
+
+This is real progress, not a closed door — but also not "solved,"
+stated precisely: one of Microsoft's own embedded correctness checks in
+`dispmprt.h` (a `static_assert` verifying `DXGK_CHILD_CAPABILITIES`'s
+exact byte layout) genuinely **fails** under this toolchain, including
+after trying `-mms-bitfields` (mingw's standard MSVC-bitfield-ABI flag).
+That means at least one struct's field layout, as GCC/mingw-w64
+computes it, does not match what MSVC — and therefore the real Windows/
+ReactOS kernel calling into a real driver — expects. A real,
+unresolved, and non-trivial cross-compiler ABI question, not a
+one-line fix; see `driver/gpu/README.md` for the full account. Separately
+found live while investigating this: the real KMDF headers Phase 9
+similarly said were "not present in this toolchain at all" are *also*
+real and present in the same WDK package (`c/Include/wdf/kmdf/1.11/`) —
+found, not yet compile-verified the way WDDM's headers were, stated
+honestly rather than claimed complete (`tooling/compat-db/ddkgap/`'s
+KMDF section now says so).
+
+Distinct from this same toolchain's abundant *usermode* Direct3D
+headers (`d3d9.h` through `d3d12.h`) — those are for applications
+consuming Direct3D, not for a kernel-mode driver implementing a WDDM
+miniport, and their presence never helped here.
 
 **3. Real second-GPU hardware behind VFIO/IOMMU — categorically absent
 from every sandbox this project has run in, unchanged since Phase 6.**
@@ -1165,15 +1200,31 @@ in any sandbox shaped like the ones this project has used.
 
 ### What this means for "in full"
 
-All three blockers are independent — fixing any one doesn't unblock the
-others, and this pass fixed none of them (none are fixable from inside
-this sandbox). What changed this pass: the picture is now real and
-sourced instead of assumed. `docs/DECISIONS.md` ADR-0003 carries the
-same update. Revisit this phase once blocker 3 lifts (real hardware with
-VFIO/IOMMU available) — at that point blockers 1 and 2 become the actual
-gating work, and by then ReactOS's own WDDM effort will likely have
-moved past its Oct-2025-vintage 2D-only state, worth re-checking fresh
-rather than assumed stale.
+The three blockers are still independent — fixing one doesn't unblock
+the others — but they're no longer equally unresolved. Blocker 2 moved
+from "hard toolchain gap" to "real, fetchable, mostly-compiling, with
+one genuine unresolved ABI question" — the one blocker this pass
+actually made concrete progress on, verified live rather than just
+re-described. Blockers 1 (ReactOS's own early/2D-only WDDM) and 3 (no
+VFIO/IOMMU hardware in any sandbox this project has run in) are
+unchanged and still real. `docs/DECISIONS.md` ADR-0003 carries the same
+correction. Revisit this phase once blocker 3 lifts (real hardware with
+VFIO/IOMMU available) — at that point blocker 2's remaining ABI-layout
+question becomes real, concrete gating work with an actual starting
+point (`driver/gpu/wddm-probe.c`), not a re-investigation from zero, and
+ReactOS's own WDDM effort will likely have moved past its
+Oct-2025-vintage 2D-only state, worth re-checking fresh rather than
+assumed stale.
+
+**A note on how this correction happened, worth keeping honest:** this
+project's own first pass at Phase 11 checked whether mingw-w64
+*pre-packages* WDDM/DXGKRNL headers, found no, and reported that as
+though it settled the question. It didn't — Musa.Veil (already this
+project's own reference source for undocumented NT declarations,
+ADR-0006) had already established the right instinct months earlier:
+check whether a real, legitimate upstream source has what's missing
+before declaring it absent. That check wasn't made here the first time,
+and should have been.
 
 ---
 

@@ -87,10 +87,28 @@ NDIS 6.x (connectionless miniport model):
   NdisMIndicateReceiveNetBufferLists    abi-only (header gap)
   NdisAllocateNetBufferListPool         abi-only (header gap)
 
-KMDF: not present in this toolchain at all
-WDDM/DXGKRNL: not present in this toolchain at all (no dxgkrnl.h/
-              d3dkmthk.h/etc., no dxgkrnl import library)
+KMDF: not pre-packaged by mingw-w64 - but see the correction below
+WDDM/DXGKRNL: not pre-packaged by mingw-w64 - but see the correction below
 ```
+
+**Correction, made live, not left standing:** both "not present"
+findings above checked only whether mingw-w64 *pre-packages* these
+headers (it doesn't) and reported that as though it settled a bigger
+question. It didn't. Investigating Phase 11 (`ROADMAP.md`) found the
+real Microsoft WDK/SDK headers for both KMDF (`c/Include/wdf/kmdf/
+1.11/*.h`) and WDDM/DXGKRNL (`dispmprt.h`/`d3dkmddi.h`/`d3dkmdt.h`/
+`d3dukmdt.h`) are real, official, and fetch cleanly from Microsoft's own
+NuGet packages — confirmed by actually downloading them, not by
+checking whether mingw-w64 happens to include a copy.
+`driver/gpu/fetch-wdk-headers.sh` fetches the WDDM set (never vendored —
+the WDK's own EULA forbids redistribution); `driver/gpu/wddm-probe.c`
+proves a real `DriverEntry` against the real `DXGKRNL_INTERFACE`
+contract compiles against this toolchain, live-verified, with a few
+narrow patches (same technique as the NDIS fixes) — with one genuine,
+unresolved cross-compiler ABI finding (a Microsoft `static_assert`
+that fails under GCC/mingw-w64) documented there, not hidden. KMDF's
+real headers were found the same way but not yet compile-verified. See
+`driver/gpu/README.md` and `ROADMAP.md` Phase 11 for the full account.
 
 ## What this actually says about Phase 9's scope
 
@@ -111,11 +129,13 @@ Three real, narrow, distinct gaps, not one vague "needs modernizing":
    `tooling/compat-db/ntprobe/` already used for a few NT structures,
    citing Musa.Veil, ADR-0006) would unlock building an NDIS 6.x
    miniport against this exact toolchain, no new import library needed.
-2. **KMDF is entirely absent** — headers and the runtime library both.
-   Not a header-patching job; needs `Wdf01000.sys`'s import surface and
-   `wdf.h`/`wdfdriver.h`/etc. sourced from somewhere (ReactOS's own
-   tree, if it carries them) before any KMDF driver work is possible at
-   all.
+2. **KMDF is absent from mingw-w64's own packaging — but the real
+   headers are real and fetchable**, found live in the same official
+   Microsoft WDK NuGet package Phase 11's WDDM work already fetches
+   from. Not compile-verified against this toolchain yet (WDDM's
+   headers were; KMDF's weren't, in this pass) — a real, scoped,
+   concretely-startable follow-up now, not "needs sourcing from
+   somewhere unknown" as originally written here.
 3. **The genuinely-recent (Windows 10-era) additions are absent**
    (`ExAllocatePool2`, `PsSetCreateProcessNotifyRoutineEx2`,
    `FltRegisterFilter`/minifilters) — expected, not a surprise, and not

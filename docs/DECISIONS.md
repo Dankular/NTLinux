@@ -150,6 +150,39 @@ different from a toolchain or upstream-code gap, needs real user
 hardware to ever attempt. See `ROADMAP.md` Phase 11 for the full,
 sourced writeup.
 
+**Second correction (same day, prompted directly):** the "zero
+WDDM/DXGKRNL kernel-mode headers or import libraries" claim two
+paragraphs up was itself wrong, caught only because it was pushed back
+on directly rather than left standing. It checked one thing (does
+mingw-w64 pre-package these headers — no) and reported that as though
+it answered a different, larger question (can this toolchain reach
+them at all). It can: the real Microsoft WDK headers
+(`dispmprt.h`/`d3dkmddi.h`/`d3dkmdt.h`/`d3dukmdt.h`) are real, official,
+and fetch cleanly from Microsoft's own NuGet packages
+(`Microsoft.Windows.WDK.x64` + `Microsoft.Windows.SDK.CPP`) — confirmed
+by actually downloading them, not by checking whether a link exists.
+`driver/gpu/fetch-wdk-headers.sh` fetches them (never vendored — their
+EULA explicitly forbids redistribution, read directly); `driver/gpu/
+wddm-probe.c`, a real `DriverEntry` against the real `DXGKRNL_INTERFACE`
+contract, **compiles** against this project's existing mingw-w64 DDK
+toolchain, live-verified, with a small number of narrow patches — same
+technique as the NDIS header fixes. One real, unresolved finding
+surfaced doing this: a Microsoft-authored `static_assert` in
+`dispmprt.h` checking `DXGK_CHILD_CAPABILITIES`'s byte layout fails
+under this toolchain (including with `-mms-bitfields`) — a genuine
+GCC-vs-MSVC struct-layout mismatch, not a spurious bug, left
+unresolved and undisguised. Real KMDF headers were also found live in
+the same WDK package, not yet compile-verified.
+
+The instinct that should have caught this the first time already
+existed in this project's own history: ADR-0006 established
+Musa.Veil as a reference source specifically because a real upstream
+project can supply declarations this project's own packaged toolchain
+lacks. That check — does a real, legitimate upstream source have what's
+missing, before calling it absent — wasn't applied to WDDM/DXGKRNL the
+first time, and should have been. See `ROADMAP.md` Phase 11 and
+`driver/gpu/README.md` for the full corrected account.
+
 ---
 
 ## ADR-0004 — Desktop shell: LingmoOS is the reference/reuse target for Windows-like look and feel

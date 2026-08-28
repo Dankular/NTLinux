@@ -47,6 +47,13 @@ __pycache__/
 /driver/net/reactos/*.o
 /driver/net/reactos/*.sys
 /driver/net/reactos/build/
+
+# Real Microsoft WDK/SDK headers (driver/gpu/fetch-wdk-headers.sh) -
+# their EULA explicitly prohibits redistribution, so these are fetched
+# fresh, never committed (ADR-0002/Rule 17, same as every other fetched
+# artifact above).
+/driver/gpu/build/
+/driver/gpu/wddm-probe.o
 /driver/usb/reactos/*.o
 /driver/usb/reactos/*.sys
 /driver/usb/reactos/ntusb_test.exe
