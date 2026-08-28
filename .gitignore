@@ -65,6 +65,11 @@ __pycache__/
 /driver/usb/reactos/*.sys
 /driver/usb/reactos/ntusb_test.exe
 
+# Real Microsoft KMDF headers (driver/kmdf/fetch-kmdf-headers.sh) - same
+# WDK EULA/ADR-0002/Rule 17 shape as driver/gpu/build/ above.
+/driver/kmdf/build/
+/driver/kmdf/kmdf-probe.o
+
 # Phase 5: fetched ReactOS x64 nightly ISO - large, not vendored (consume,
 # don't vendor - ADR-0002/Rule 17), same as the release ISOs above.
 /driver/cell/images/reactos-livecd-*-x64-*.iso

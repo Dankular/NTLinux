@@ -1028,20 +1028,31 @@ not one vague "needs modernizing":
    technique `ntprobe/` already used for a few NT structures, ADR-0006)
    would unlock NDIS 6.x miniports against this exact toolchain with no
    new import library needed. Real, scoped follow-up work.
-2. **KMDF is absent from mingw-w64's packaging — corrected by Phase 11's
-   research, not left as originally stated.** This entry originally said
-   KMDF headers were "entirely absent" and needed sourcing "from
-   somewhere." While investigating Phase 11's WDDM headers, the real
-   KMDF headers (`c/Include/wdf/kmdf/1.11/wdf.h` and friends) turned up
-   live in the exact same official Microsoft WDK NuGet package
+2. **KMDF is absent from mingw-w64's packaging, but the real headers
+   fetch and now compile clean — corrected twice, not left at "found,
+   not solved."** This entry originally said KMDF headers were
+   "entirely absent" and needed sourcing "from somewhere." While
+   investigating Phase 11's WDDM headers, the real KMDF headers
+   (`c/Include/wdf/kmdf/1.11/wdf.h` and friends) turned up live in the
+   exact same official Microsoft WDK NuGet package
    `driver/gpu/fetch-wdk-headers.sh` already fetches — real, present,
-   not sourced from ReactOS's tree as guessed here. Not yet
-   compile-verified against this toolchain the way the WDDM headers
-   were (`driver/gpu/wddm-probe.c`) — stated as found, not solved. See
-   `ROADMAP.md` Phase 11 and `docs/DECISIONS.md` ADR-0003's second
-   correction for the fuller account of why this project's first pass
-   at "is X present in this toolchain" undersold what's actually
-   reachable, here and for WDDM alike.
+   not sourced from ReactOS's tree as guessed here. A later pass
+   (`driver/kmdf/`) closed the "not yet compile-verified" gap for real:
+   `driver/kmdf/fetch-kmdf-headers.sh` fetches them, and
+   `driver/kmdf/kmdf-probe.c` — a real KMDF `DriverEntry` referencing
+   the real `WDF_DRIVER_CONFIG`/`WdfDriverCreate` contract — **compiles
+   clean** against this project's mingw-w64 toolchain, verified live and
+   reproducibly (`make clean && make`, twice, same result). Two real,
+   narrow patches found by actually compiling, not guessed at: a batch
+   of case-sensitivity `#include` mismatches (Windows-filesystem-safe,
+   Linux-fatal), and a genuine header-ordering bug in `wdf.h` itself
+   (`wdfdevice.h` uses `WDF_REQUEST_TYPE` before `wdfrequest.h`, the
+   header that defines it, is included — MSVC tolerates it, GCC
+   correctly doesn't). See `driver/kmdf/README.md` for the full account,
+   including what this still doesn't prove (no import library for the
+   versioned KMDF co-installer stub exists in this toolchain, so linking
+   a real KMDF driver remains separate, unattempted follow-up work —
+   same boundary `wddm-probe.c` draws around `dxgkrnl.sys`).
 3. **The truly recent (Windows 10-era) additions are absent**
    (`ExAllocatePool2`, `PsSetCreateProcessNotifyRoutineEx2`,
    `FltRegisterFilter`) — expected, not a surprise, and outside this
