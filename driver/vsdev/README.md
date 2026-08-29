@@ -186,6 +186,56 @@ behavior never changed.
   separate follow-up: capture a screendump on every dismiss-dialog poll
   (not just the final one) to see exactly what's on screen when the
   language actually changes.
+
+  **Follow-up, later pass: root cause found, and it's not the "second
+  dialog" theory above — real per-poll evidence now in hand, not
+  guessed at.** Re-ran with actual per-poll instrumentation this time
+  (a temporary local copy of `dismiss_dialog()` that screendumps on
+  *every* poll, not just the final state) against a fresh ReactOS x64
+  nightly boot (`0.4.17-dev-721-g62de6b3-x64-msvc-win-dbg`). Real,
+  surprising result: **the `--click-x`/`--click-y` mechanism this
+  section's own previous "fix" added never once actually dismissed the
+  dialog — 40 consecutive polls over 200 real seconds are all
+  pixel-identical.** The mouse cursor visibly lands and stays exactly
+  on the "Next" button every single poll (its keyboard-focus dotted
+  rectangle stays visible throughout, confirming the click really does
+  land on the right control), but the click itself never fires the
+  button's action — the dialog just never closes. See
+  `driver/cell/images/phase14-wizard-hang/08-dismiss-dialog-click-poll001-before.png`
+  and `09-dismiss-dialog-click-poll030-still-open.png` — 29 polls and
+  roughly 145 seconds apart, visually indistinguishable.
+
+  Sent one manual `sendkey ret` instead (the *original* mechanism, from
+  before the click-based "fix" existed) and the dialog dismissed
+  immediately and cleanly on the very next screendump — straight to a
+  real desktop, UI language still English, no combobox-cycling side
+  effect this time
+  (`10-single-enter-dismisses-cleanly.png`). No Danish-language switch
+  was reproduced in this pass — for a straightforward reason: the
+  click-based automation never got anywhere near a hypothetical second
+  dialog, because it never got past the *first* one at all.
+
+  **What this actually means:** QMP's synthetic `input-send-event`
+  absolute-pointer click (`abs` x/y then `btn` down/up back-to-back, no
+  delay between) visually lands and focuses the target control on this
+  ReactOS/QEMU combination, but does not register as an *activating*
+  click for at least this one button. Whether that's a genuine ReactOS
+  input-handling quirk, a QEMU `usb-tablet` timing detail, or something
+  specific to this exact dialog/control was not narrowed further this
+  pass. **`--click-x`/`--click-y` should now be treated as a real,
+  reproducible dead end in this environment — not the safer option its
+  own docstring in `qmp_console.py` currently claims.** `run-test.sh`
+  and any future caller should prefer plain `sendkey ret` (already
+  confirmed working, repeatedly, including this pass) until the click
+  mechanism itself is understood or fixed. The original Danish-locale
+  flake this whole section is about was never reproduced here; with
+  real per-poll evidence now showing the click path simply doesn't
+  work at all, the leading theory is no longer "a second dialog's
+  combobox eating a stray Enter" — it's that the flake belongs to the
+  blind-`ret` path specifically (the one that *does* work) and still
+  needs its own dedicated per-poll-instrumented repro, which this pass
+  didn't reproduce (single manual `ret` presses, not a `dismiss-dialog`
+  poll loop, were used here) — real, separate follow-up, still open.
 - **PnP-triggered load never exercised.** `vsdev.inf` + `AddDevice`
   exist and are believed correct (same shape as the legacy path that
   *did* get verified, sharing `VsdevCreateDeviceObject`), but a real

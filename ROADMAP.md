@@ -1742,15 +1742,157 @@ this account was written) — real, separate follow-up: reproduce with
 screenshots kept, and let the search run considerably longer (an hour+)
 once before concluding it's a true hang rather than "very slow."
 
+### The hang, confirmed for real: a genuine 68-minute reproduction, root-caused as far as this pass could take it
+
+A later pass reproduced this from a completely fresh boot (a newly
+fetched x64 nightly, `0.4.17-dev-721-g62de6b3`, in-guest version banner
+still reads `0.4.16-amd64-dev` build 2669 - same underlying release
+line) and this time let it run **68 real minutes**, not 13, capturing a
+screendump plus a QEMU-process CPU-time sample (`wmic process ...
+get UserModeTime,KernelModeTime`) every ~2.5 minutes throughout (28
+polls total) instead of killing the instance early. Every single one
+of the 28 screendumps shows the identical "Please wait while the
+wizard searches..." page, byte-for-byte except for the in-guest
+taskbar clock (which advances normally throughout, from 11:16 PM to
+12:24 AM - proof the guest kernel and window manager are alive, not
+frozen) - **conclusively a true hang, not "very slow": no version of
+"slow" takes over an hour to search for hardware with zero progress
+indication.** Representative frames (start, +20min, +40min, +61min,
++68min-final) are committed at
+`driver/cell/images/phase14-wizard-hang/02` through `06` (the full set
+of 28 raw screendumps was kept locally during the run per the task's
+instruction but not all committed - byte-identical spinner frames add
+no evidence a representative sample doesn't already carry):
+
+![Add Hardware Wizard hardware-search page, at boot+68 minutes - identical to the frame captured at boot+0 minutes](driver/cell/images/phase14-wizard-hang/06-search-t+68min-final.png)
+
+**Root cause narrowed further than any previous pass, though not to a
+specific line of ReactOS code:** two real, live diagnostics this pass
+added that the earlier 13-minute attempt didn't:
+
+1. **QEMU-process CPU-time sampling throughout the full 68 minutes**
+   (task's own suggested diagnostic - "a truly stuck/looping guest
+   process would show CPU usage, a genuinely blocked-on-nothing wait
+   might not"): total CPU time consumed by the whole QEMU process (both
+   the TCG-emulated guest *and* QEMU's own host-side overhead) across
+   the entire 68-minute window was **~9.7 seconds** (`UserModeTime`
+   +90,468,750 in 100ns units, `KernelModeTime` +6,250,000, from the
+   `wmic` samples at poll 0 and poll 27) - **an average of ~0.24% of
+   one host core**, and the per-interval deltas stayed in that same
+   tiny range at every single one of the 28 samples, no spike anywhere
+   in the run. A guest genuinely spinning on a hardware-probe loop
+   under TCG (software-emulated instruction execution, not
+   hardware-virtualized) would burn real, visible host CPU the entire
+   time it's spinning - TCG has no way to "busy-wait for free." This
+   doesn't fully rule out a *very* long real hardware-timeout chain
+   (millisecond-scale per-device timeouts occasionally polled, mostly
+   asleep between them, could look similarly idle), but it does rule
+   out the simplest "tight loop that never yields" failure mode.
+2. **The wizard's own UI thread is still fully alive and responsive
+   the entire time** - sent a single `sendkey esc` after the full
+   68-minute wait and the wizard window closed immediately, cleanly,
+   back to a normal desktop:
+
+   ![Desktop immediately after Escape, sent after a full 68-minute wait - the wizard's window closed cleanly](driver/cell/images/phase14-wizard-hang/07-escape-closes-wizard-ui-responsive.png)
+
+   This is a real,
+   meaningful finding in its own right: whatever is stuck is **not**
+   the process as a whole or the window's message loop - Win32
+   `WM_CLOSE`/`IDCANCEL` handling kept working the entire time. The
+   hang is isolated to whatever background worker is actually doing
+   the enumeration (a PnP bus-relations/device-detection call that
+   never returns or never signals completion back to the wizard's UI
+   thread), not a full GUI deadlock. This meaningfully narrows where a
+   future root-cause pass with a real kernel debugger attached (this
+   nightly already boots with `DEBUGPORT=COM1`/`BAUDRATE=115200` kernel
+   debug options per the serial log, just no debugger client was
+   attached this pass) should actually look: the enumeration
+   call/thread specifically, not window/message-loop code.
+
+Also checked, per the task's suggestion, whether the serial console
+carried any clue: it does not, for a mundane reason - this nightly's
+`DEBUGPORT=COM1` output is the KD64 remote-kernel-debugger wire
+protocol (repeating framed sync packets, since no `kd`/`windbg`-style
+client was ever attached to consume and ack them), not a general
+kernel log, and it stops producing new frames once the boot-time
+handshake attempts are exhausted - there was nothing new in it during
+the hang, expected rather than a dead end specific to this
+investigation.
+
+**Not resolved this pass, stated precisely:** *why* the enumeration
+never completes - genuine upstream ReactOS bug in this nightly's
+hardware-detection code against QEMU/TCG's specific virtual chipset
+(most likely candidate, given the "UI stays responsive, CPU stays
+idle" shape - consistent with a worker thread blocked forever on a
+synchronization object that nothing ever signals) versus some
+still-uncategorized third explanation was not distinguished further -
+that needs either a real kernel debugger attached to this exact build
+to see which thread is blocked where, or bisecting across older/newer
+ReactOS nightlies to see whether the hang is version-specific. Real,
+separate follow-up, not attempted this pass (out of scope: this task
+was to characterize the hang, not fix ReactOS itself).
+
 **Net effect on Phase 14:** the automation-technique blocker this
 phase's own first task item names is now substantially resolved (Win+R
 reliably reaches both a console and, via `.cpl` files, Control Panel
-applets that a broken UI button can't block) — but a new, real,
-ReactOS-side blocker was found in its place, one layer deeper than
-where this phase started. None of the four target drivers were
-actually installed this pass; the wizard never got past its own
+applets that a broken UI button can't block) - but the ReactOS-side
+hardware-search hang is now a **confirmed, real blocker**, not an
+unconfirmed candidate. None of the four target drivers were installed
+this pass either; the wizard still never got past its own
 hardware-search phase to reach the "Have Disk" step where
-`vsdev.inf`/`ntbridge.inf`/etc. would actually get used.
+`vsdev.inf`/`ntbridge.inf`/etc. would actually get used - that step
+remains completely unexercised by this project. A real next step this
+hang's own shape suggests: try the wizard's "Add a new hardware
+device" → manual "Install the hardware that I manually select from a
+list" path instead of the auto-detect ("Please wait while the wizard
+searches...") path this pass hit - manual selection may not invoke
+whatever enumeration call is stuck, and would reach "Have Disk" without
+needing this hang fixed first. Not attempted this pass (the task
+specifically asked to characterize *this* hang thoroughly first).
+
+### A second, real finding along the way: the `dismiss-dialog` click-based fix doesn't actually work here, and the real Danish-locale flake root cause is still open
+
+Investigating the separate, previously-unresolved Danish-locale flake
+(this file's earlier account, and `driver/vsdev/README.md`'s "Known
+gaps") meant re-running the LiveCD's language-dialog dismissal with
+real per-poll screendump instrumentation this time (a temporary local
+copy of `qmp_console.py`'s `dismiss_dialog()` that saves every single
+poll, not just the final state) - and it surfaced a different, more
+fundamental problem than either prior theory guessed. **The
+`--click-x`/`--click-y` option (this project's own earlier "fix" for
+the flake) never once actually dismissed the dialog: 40 consecutive
+polls over 200 real seconds are all pixel-identical** - the mouse
+cursor visibly lands and stays exactly on the "Next" button (its
+keyboard-focus dotted rectangle stays visible throughout, confirming
+the click landed on the right target), but the click itself never
+fires the button's action (`driver/cell/images/phase14-wizard-hang/
+08-dismiss-dialog-click-poll001-before.png` and
+`09-dismiss-dialog-click-poll030-still-open.png` - visually
+indistinguishable from each other 29 polls and ~145 seconds apart).
+Sent a single manual `sendkey ret` instead - the *original* mechanism,
+before the click-based "fix" was added - and the dialog dismissed
+immediately and cleanly on the very next screendump, straight to a
+real desktop, UI language still English
+(`10-single-enter-dismisses-cleanly.png`). No Danish-language switch
+was reproduced in this pass, for a straightforward reason: the
+automation never got anywhere near a hypothetical second dialog,
+because the click-based path never got past the first one at all.
+
+**What this means, precisely, and why it revises rather than confirms
+this file's own earlier "second dialog" theory:** QMP's synthetic
+`input-send-event` absolute-pointer click (`abs` x/y then `btn`
+down/up) visually lands and focuses the target control on this
+ReactOS/QEMU build, but does not register as an *activating* click for
+at least this one button - whether that's a ReactOS input-handling
+quirk, a QEMU `usb-tablet` timing detail (down and up sent back-to-back
+with no delay), or something specific to this exact dialog/control
+wasn't narrowed further this pass. `--click-x`/`--click-y` should now
+be treated as a real, reproducible dead end in this environment, not
+the safer option its own docstring claims - see
+`driver/vsdev/README.md`'s "Known gaps" for the precise, updated
+account and what still needs a dedicated repro (the original blind-
+`ret` flake itself, now the more likely home for the Danish-locale
+symptom, still not reproduced with per-poll evidence).
 
 ---
 
