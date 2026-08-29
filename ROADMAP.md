@@ -1393,7 +1393,7 @@ and exact scope boundary.
 
 ---
 
-## Phase 12 — ntdll integration & remaining NT object types 🟨 (Thread objects + APC support done and verified; real Wine `ntdll` integration attempted for real on a real build server — compiles clean and is safely inert by default, but hangs when actually enabled, a real unresolved bug, not landed as working)
+## Phase 12 — ntdll integration & remaining NT object types 🟨 (Thread objects + APC support done and verified; real Wine `ntdll` integration attempted for real across two sessions — two real bugs found and fixed with reproducible evidence, a third, deeper architectural gap found and precisely root-caused but not closed; still hangs when enabled, still not landed as working)
 
 Two things bundled together, not because they're the same kind of work,
 but because this phase's original text assumed the second was blocked on
@@ -1421,26 +1421,58 @@ genuinely blocked) Wine `ntdll` patching work.
 
 **Task breakdown:**
 
-- [x] **Attempted for real, on a real Linux build server — real
-      progress, a real unresolved bug, not "not attempted" anymore.**
-      A later pass got a real Wine source checkout + full build (see
-      `ROADMAP.md`'s cross-host re-verification section) and wrote
-      `wine/ntabi-sync-integration/ntabi-sync.patch`: a scoped patch to
-      `dlls/ntdll/unix/sync.c` routing `NtCreateEvent`/`NtSetEvent`/
-      `NtResetEvent`/`NtWaitForSingleObject` (Events only — not the full
-      Event/Mutant/Semaphore/Section/Completion/Process/Thread breadth)
-      through `libntabi` when `WINENTABI=1`, modeled directly on Wine's
-      own real, already-upstream `inproc_*`/`ntsync` fast-path pattern.
-      **Compiles clean; correctly inert when disabled (verified live —
-      a real event-lifecycle test PASSes identically with `WINENTABI`
-      unset); but hangs when enabled**, during Wine's own internal
-      `wineboot.exe --init`, before any test code runs — a real,
-      reproducible concurrency bug, killed cleanly and the host
-      confirmed healthy afterward, not chased to a root cause this pass
-      (real stopping point, not a time-only tradeoff — see that
-      directory's README for the full, honest account and the current
-      best theory). **Not landed as working** — do not re-enable
-      `WINENTABI=1` without diagnosing this first.
+- [x] **Attempted for real, on a real Linux build server, across two
+      sessions — real progress each time, a real unresolved bug, not
+      "not attempted."** First pass: got a real Wine source checkout +
+      full build and wrote `wine/ntabi-sync-integration/ntabi-sync.patch`:
+      a scoped patch to `dlls/ntdll/unix/sync.c` routing
+      `NtCreateEvent`/`NtSetEvent`/`NtResetEvent`/`NtWaitForSingleObject`
+      (Events only — not the full Event/Mutant/Semaphore/Section/
+      Completion/Process/Thread breadth) through `libntabi` when
+      `WINENTABI=1`, modeled directly on Wine's own real, already-
+      upstream `inproc_*`/`ntsync` fast-path pattern. Compiled clean,
+      correctly inert when disabled, but hung when enabled during
+      `wineboot.exe --init` — not chased to a root cause that pass (real
+      stopping point given the risk of continuing to experiment against
+      a shared host, not a time-only tradeoff).
+      **Second pass (this session): root-caused it for real**, using
+      `fprintf` tracing added to both sides of the protocol (this
+      patch's own `sync.c` code *and* `ntd.c` itself) plus live
+      `/proc/<pid>/task/<tid>/wchan` inspection of the actually-hung
+      kernel threads — not guessed at. Found and fixed two real,
+      independent bugs with reproducible before/after evidence: (1)
+      named events created a second time (`STATUS_OBJECT_NAME_EXISTS`)
+      left the *first* creator's handle fast-pathed while every other
+      handle to the same real object fell through to wineserver, so a
+      `SetEvent` through the fast-pathed handle silently never reached
+      the object anything else was actually waiting on — fixed by
+      restricting the fast path to events created **unnamed**; (2)
+      `ntabi_map_insert` never overwrote a stale entry when Wine reused
+      a closed `HANDLE`'s numeric value for a new object (real, routine
+      Wine/wineserver behavior — `NtClose` isn't intercepted by this
+      patch), so lookups could keep returning an already-dead object's
+      ntabi shadow indefinitely — fixed by making the insert
+      update-in-place. **A third, deeper issue was found and precisely
+      root-caused but not closed**: even restricted to unnamed events,
+      `WINENTABI=1` still deadlocked a full wineboot session, because
+      this patch's `NtSetEvent` fast path still skips the real
+      wineserver call for a "private" event whose real underlying object
+      can, in practice, be observed by another thread or process through
+      the genuine wineserver mechanism this patch has no visibility
+      into (proven live: a `services.exe` thread blocked forever
+      waiting on its own correctly-registered, genuinely-unnamed event,
+      because whatever was meant to signal it was itself blocked in a
+      real, unrelated wineserver wait the entire time). A narrowing
+      (never fast-path an `INFINITE` wait) was implemented and verified,
+      via the same dual-sided tracing, to change the routing exactly as
+      intended — but was then verified, by direct experiment, **not**
+      to resolve the hang, since the deadlock was never about which
+      channel the *wait* used. Kept anyway as an independently-correct
+      safety bound (a fast-pathed wait can no longer block forever with
+      zero fallback). **Still not landed as working** — see that
+      directory's README for the full account, including precisely what
+      a structurally sound fix would require. Do not re-enable
+      `WINENTABI=1` against a real wineboot session.
 - [ ] Validate against Wine's own test suite (`dlls/ntdll/tests/`,
       `dlls/kernel32/tests/` sync-related suites) — passing is the bar,
       not just "it links." Blocked on the item above.
@@ -1497,12 +1529,19 @@ genuinely blocked) Wine `ntdll` patching work.
 `ntabi`/`ntd` handling the routed operations instead of wineserver
 (Phase 2's original success criterion) + a measured reduction in
 wineserver IPC traffic (Phase 3's original success criterion) — **both
-still unmet, genuinely blocked on a full Wine source build this sandbox
-doesn't have, no different from Phase 13's RosBE blocker** — + Thread
-objects and APCs implemented with real semantics, verified the same way
-every other object type in `ntd` was: real cross-process tests measuring
-actual behavior, not stubs. **The last part is met.** The first two are
-not, and this phase stays 🟨 rather than ✅ until they are.
+still unmet, but no longer for lack of a Wine build** (a full Wine
+source checkout and build now exist and were used directly, twice, on
+a real Linux build server — the earlier "blocked on a build this
+sandbox doesn't have" framing is out of date). They remain unmet
+because `WINENTABI=1` genuinely still hangs a full wineboot session for
+the real, precisely root-caused architectural reason described in
+`wine/ntabi-sync-integration/README.md` — reaching Wine's own test
+suites needs that hang actually fixed first, not just a build
+environment. + Thread objects and APCs implemented with real semantics,
+verified the same way every other object type in `ntd` was: real
+cross-process tests measuring actual behavior, not stubs. **The last
+part is met.** The first two are not, and this phase stays 🟨 rather
+than ✅ until they are.
 
 ---
 
