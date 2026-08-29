@@ -86,3 +86,12 @@ __pycache__/
 # vendor a real one into the repo, defensively ignore any dropped next to
 # the selector script during local testing.
 /distro/network/wireguard-nearest/*.conf
+
+# Phase 13: default REACTOS_SRC clone target and ISO-assembly output
+# directory when build-reactos-core.sh / assemble-rosntcell-boot.sh are
+# run with no arguments from inside this directory - a real ReactOS
+# checkout+build tree and a real, large bootable ISO, both fetched/built
+# fresh, never vendored (ADR-0002/Rule 17), same shape as every other
+# fetched/built artifact above.
+/driver/cell/reactos-build/reactos-src/
+/driver/cell/reactos-build/rosntcell-build/
