@@ -1569,7 +1569,7 @@ than ✅ until they are.
 
 ---
 
-## Phase 13 — RosBE & the ROS-NTCELL stripped driver-cell profile 🟨 (RosBE itself turned out to be unnecessary — the real ReactOS kernel, HAL, and bootloader all compile clean from source with this project's existing mingw-w64 toolchain, verified live; a full bootable minimal ROS-NTCELL image is not yet assembled)
+## Phase 13 — RosBE & the ROS-NTCELL stripped driver-cell profile 🟨 (RosBE itself turned out to be unnecessary, and a real ROS-NTCELL image now genuinely boots — a real ntoskrnl/HAL/ACPI/PnP init, real boot- and PnP-driver loading, verified live under QEMU with a real captured serial trace — but stops at a real, well-understood NT bug check (0x6B, no user-mode present) rather than reaching a stable running state)
 
 Moved out of Phase 4, where it originally sat as a "known gap," once
 Phase 5 established that RosBE's actual scope is much narrower than
@@ -1628,41 +1628,183 @@ retargeted directly at `ninja ntoskrnl hal boot/freeldr/freeldr/
 freeldr.sys`, the actual pieces this phase's success criterion needs,
 which is both more correct and faster than the full desktop build.
 
-**What this does not yet prove:** these three binaries have not been
-assembled into an actual bootable image (a minimal boot CD/floppy
-layout, a stripped registry hive, and whatever minimal driver set
-`freeldr`/`ntoskrnl` need to reach a usable state — real, separate,
-unattempted follow-up), and none of the four Phase 14 drivers were
-built against this new kernel tree specifically (still built against
-the standalone mingw-w64 DDK path, unchanged). The task items below are
-retained, updated to reflect what's actually left:
+**What that pass did not yet prove:** these three binaries had not been
+assembled into an actual bootable image. A later pass, on the same real
+Linux build server, did that assembly and booted the result live —
+see the next section for the real, captured result.
+
+### Real, live result: a genuine ROS-NTCELL boot — HAL/ACPI/MM/PnP init and real driver loading, stopping at a real NT bug check
+
+`driver/cell/reactos-build/assemble-rosntcell-boot.sh` takes
+`build-reactos-core.sh`'s three binaries and assembles them into a real,
+bootable El Torito CD image, then (with `--test`) boots it live under
+QEMU (same TCG-fallback situation as every other headless-sandbox QEMU
+use in this ROADMAP — no `/dev/kvm` on this build server either) and
+captures a real serial-console trace. Per Rule 1, it reuses ReactOS's
+own boot-image-assembly machinery throughout rather than hand-rolling
+an ISO or registry format:
+
+- the real `isoboot.bin`/`isombr.bin` El Torito boot sectors and
+  `native-mkisofs`/`native-isohybrid` host tools `boot/boot_images.cmake`
+  itself builds and uses for its own `bootcd` target — just fed a
+  hand-picked minimal file list instead of the full desktop-shell
+  `livecd` list `bootcd` normally depends on (that full list is what
+  actually needs the desktop-shell components that don't build, per the
+  previous section);
+- `native-mkhive`, fed ReactOS's own real `boot/bootdata/*.inf` registry
+  description files, for the SYSTEM/SOFTWARE/DEFAULT/SAM/SECURITY hives
+  — literally `ninja livecd_hives`, the exact command
+  `create_registry_hives()` in `sdk/cmake/CMakeMacros.cmake` runs. No
+  hand-built registry hive format;
+- `freeldr.ini`'s boot entry is a trimmed copy of the real
+  `BootType=Windows2003`/`SystemPath=\reactos`/`/DEBUG /DEBUGPORT=COM1`
+  shape `boot/bootdata/bootcd.ini`'s own `LiveImg_Debug` entry already
+  uses.
+
+The genuinely new, hand-assembled part is the ISO's minimal file list
+(the driver set ROS-NTCELL needs instead of the full desktop `livecd`
+one) — found by **real, empirical, live iteration**, not guessed:
+started from just the three `build-reactos-core.sh` binaries on the CD,
+booted under QEMU, read the real error FreeLoader or `ntoskrnl`
+printed, built and added exactly the one real file that error named,
+and repeated — over twenty real QEMU boots, each with real captured
+output. That converged on: `rosload.exe` (freeldr's own real "second
+stage loader"); 10 NLS codepage/case-table files `ntoskrnl`'s loader
+needs before it will open the registry; `kdcom.dll` + `bootvid.dll`
+(real, unconditional `ntoskrnl.exe` PE import dependencies, not
+optional even with `/NOGUIBOOT`); the 16 real `Start=0` boot-start
+services in `boot/bootdata/hivesys.inf` (`swenum`, `sacdrv`, `mup`,
+`ndis`, `nmidebug`, `usbhub`, `usbehci`, `usbohci`, `usbuhci`,
+`usbstor`, `usbccgp`, `mountmgr`, `acpi`, `pci`, `ramdisk`, `disk`);
+then a real, live cascade of PnP-triggered drivers QEMU's own emulated
+i440fx/PIIX3 hardware pulls in once `acpi.sys`+`pci.sys` actually
+enumerate it (`isapnp`, `pciide`, `atapi`, `cdrom`, `vga`, `i8042prt`,
+plus `wdf01000`/`wdfldr` since several of those are KMDF drivers); a
+handful of real transitive PE-import dependencies those pull in
+(`usbd`, `usbport`, `pciidex`, `buslogic`+`scsiport`, `wmilib`,
+`classpnp`, `ksecdd`, `cdfs`, `ks`); and a final batch of Start=1
+drivers `ntoskrnl`'s Phase 1 init (`IoInitSystem`) pulls in right after
+"BOOT DRIVERS LOADED" (`videoprt`, `null`, `beep`, `fs_rec`,
+`kbdclass`, `mouclass`, `floppy`, `blue`, `msfs`, `npfs`, `afd`,
+`netio`) — 41 real ReactOS driver/DLL binaries beyond `ntoskrnl.exe`/
+`hal.dll` in total, every one of them a real compile against this same
+mingw-w64 toolchain, every one added because a real boot named it, not
+because it was assumed needed.
+
+**Real, live result — a full serial-console kernel-boot trace, captured
+verbatim via `assemble-rosntcell-boot.sh ... --test`:**
+
+```
+(/ntoskrnl/kd64/kdinit.c:95) ReactOS 0.4.17-amd64-dev (Build 20260828-62de6b3) (Commit 62de6b33a2bbdb525055d18a9d8269d79341a78a)
+(/ntoskrnl/kd64/kdinit.c:96) 1 System Processor [512 MB Memory]
+(/ntoskrnl/kd64/kdinit.c:100) Command Line: DEBUG DEBUGPORT=COM1 BAUDRATE=115200 SOS FASTDETECT MININT NOGUIBOOT
+(/ntoskrnl/ke/amd64/cpu.c:273) Supported CPU features: KF_RDTSC KF_CR4 KF_CMOV ... KF_NX_BIT KF_NX_ENABLED X86_FEATURE_PAE
+(/hal/halx86/acpi/halacpi.c:928) ACPI v1.0-1.0b detected. Tables: [RSDT] [APIC] [FACP]
+(/hal/halx86/apic/halinit.c:48) Using HAL: APIC UP DBG
+(/ntoskrnl/mm/mminit.c:135)           0xFFFFF80000000000 - 0xFFFFF80004800000	Boot Loaded Image
+(/ntoskrnl/mm/mminit.c:146)           0xFFFFFA8000000000 - 0xFFFFFA8000901000	PFN Database
+... (full real ARM3 memory-manager layout — Non Paged Pool, System View
+    Space, Session Space, Page Tables, Hyperspace, System Cache, Paged
+    Pool, System PTE Space — all real addresses printed by real code)
+(/drivers/ksfilter/swenum/swenum.c:428) SWENUM loaded
+BOOT DRIVERS LOADED
+(/ntoskrnl/mm/ARM3/sysldr.c:170) Loading: \SystemRoot\system32\drivers\i8042prt.sys at FFFFF880761D8000 with 3b pages
+(/drivers/input/i8042prt/hwhacks.c:278) SMBiosTables HACK, see CORE-14867
+... (real, live PnP-triggered driver loads for kbdclass, mouclass,
+    floppy, fs_rec, null, beep, blue, vga, videoprt, msfs, npfs, afd,
+    netio — each one the real PnP manager reacting to QEMU's actual
+    emulated hardware, not a canned list)
+(/ntoskrnl/io/iomgr/driver.c:83) Deleting driver object '\Driver\KdDriver'
+
+*** Fatal System Error: 0x0000006b
+                       (0xFFFFFFFFC0000034,0x0000000000000002,0x0000000000000000,0x0000000000000000)
+
+Entered debugger on embedded INT3 at 0x0010:0xFFFFF800005A0382.
+Type "help" for a list of commands.
+
+kdb:>
+```
+
+This is real, verified-live HAL initialization, ACPI table parsing,
+memory-manager setup, Object Manager/I/O Manager/PnP Manager coming up,
+and both boot-start and PnP-triggered driver loading — the actual
+`docs/ARCHITECTURE.md` section 15 list (HAL, ntoskrnl, registry, PnP,
+I/O Manager, Object Manager, Memory Manager, driver loader) all
+genuinely exercised on a real, booted kernel for the first time in this
+project's history, not merely compiled.
+
+**Why it stops there, and why that's the real, honest boundary rather
+than one more missing driver to chase:** bug check `0x6B` is
+`PHASE1_INITIALIZATION_FAILED`, and `STATUS_OBJECT_NAME_NOT_FOUND`
+(`0xc0000034`) as its first parameter is the well-known real signature
+of "couldn't open `smss.exe`" — a real, standard NT/ReactOS bug check,
+not a ROS-NTCELL-specific bug. ROS-NTCELL ships zero user-mode Windows
+executables by design (`docs/ARCHITECTURE.md` section 15: no Explorer/
+Winlogon/shell); this pass took that literally, all the way to no
+`smss.exe` either, and confirmed live that `ntoskrnl`'s Phase 1 init
+has no path around needing at least that much user-mode to declare boot
+complete. Getting past this would mean shipping a real (even if inert)
+`smss.exe` + `ntdll.dll` + enough of the Win32 subsystem for it to not
+immediately fail — a materially different, larger undertaking than
+"assemble a boot image," and arguably outside what a driver-only cell
+needs anyway (see the task list below).
+
+**A second, real, separate finding worth documenting:**
+`UiMessageBox()` (`boot/freeldr/freeldr/ntldr/winldr.c`) blocks for a
+keypress on *every* missing boot/PnP driver, even though the underlying
+failure is individually non-fatal (FreeLoader removes the failed driver
+from the list and continues). With no VGA device attached, FreeLoader's
+own console falls back to COM1 — and QEMU's `-serial file:...` backend
+is write-only, so no keypress ever arrives. Any driver still missing
+therefore hangs the whole boot **indefinitely**, silently, rather than
+failing loudly — this is why the driver list above had to be iterated
+all the way to zero missing-driver errors (confirmed via a second,
+throwaway `-vga std` + QMP-screendump boot for the early iterations,
+before the COM1-only path was trusted) rather than stopping at "probably
+enough." See `assemble-rosntcell-boot.sh`'s own header comment for the
+full, precise account of both findings.
 
 - [x] ~~Stand up the RosBE cross-toolchain~~ — **not needed**, checked
       directly: the stock mingw-w64 toolchain this project already uses
       everywhere else builds ReactOS's kernel/HAL/bootloader clean, with
       one narrow, documented GCC-14-compatibility flag.
-- [ ] Assemble `ntoskrnl.exe`/`hal.dll`/`freeldr.sys` (now real, built
-      artifacts, not blocked on a toolchain) into an actual bootable
-      **ROS-NTCELL** image (HAL/ntoskrnl/registry/PnP/IoMgr/ObMgr/MM/
-      driver-loader/bridge-transport only — no Explorer/Winlogon/GDI
-      shell) — the real remaining work, now a boot-image-assembly
-      problem rather than a "can we even compile this" problem.
-- [ ] Once a bootable ROS-NTCELL image exists, revisit whether
-      `driver/ntbridge/reactos/ntbridge_pnp.c`'s two flagged bugs
-      (missing wait-for-lower-IRP-completion; `IoCreateDevice` from
-      DISPATCH_LEVEL) are easier to catch/fix building inside the full
-      ReactOS source tree (e.g. against its own driver-verifier
-      tooling) than the standalone mingw-w64 build this project uses
-      today — not required, but worth checking now that the option
-      exists.
+- [x] Assemble `ntoskrnl.exe`/`hal.dll`/`freeldr.sys` into an actual
+      bootable **ROS-NTCELL** image — **done, real, live-verified**:
+      `assemble-rosntcell-boot.sh` builds a real El Torito CD image from
+      ReactOS's own bootsector/mkisofs/mkhive tooling and boots it under
+      QEMU to a real, captured HAL/ACPI/MM/PnP/driver-loading trace (see
+      above). Does not yet reach a stable, non-bugchecked "running, no
+      shell" state — that needs at least a minimal `smss.exe`, tracked
+      as new follow-up below rather than silently claimed done.
+- [ ] **New:** get past bug check `0x6B` — either a minimal, real,
+      inert `smss.exe`/`ntdll.dll` (the smallest real Windows user-mode
+      footprint that lets Phase 1 init declare success), or confirm via
+      ReactOS's own source/issue tracker whether a boot configuration
+      exists that lets `IoInitSystem` consider itself done without one
+      (Rule 1 — check before assuming this needs new code). Either way,
+      this is the actual remaining gap between "ROS-NTCELL boots" and
+      "ROS-NTCELL reaches a stable state a driver could actually load
+      into," not the boot-image assembly this task item originally
+      named.
+- [ ] Once a bootable ROS-NTCELL image reaches a stable running state,
+      revisit whether `driver/ntbridge/reactos/ntbridge_pnp.c`'s two
+      flagged bugs (missing wait-for-lower-IRP-completion;
+      `IoCreateDevice` from DISPATCH_LEVEL) are easier to catch/fix
+      building inside the full ReactOS source tree (e.g. against its
+      own driver-verifier tooling) than the standalone mingw-w64 build
+      this project uses today — not required, but worth checking now
+      that the option exists.
 
 **Success criterion:** a ReactOS driver cell boots from a ROS-NTCELL
 image built by this project's own toolchain, with no desktop shell
 present — the actual "minimal bootable ReactOS image" Phase 4's success
 criterion originally called for, not the stock ISO stand-in it settled
-for. **Substantially closer, not yet met** — the compile-time blocker
-that gated this whole phase is gone; what remains is boot-image
-assembly, a real but bounded and now-unblocked task.
+for. **Substantially closer, not yet fully met** — a real ROS-NTCELL
+image now boots a real kernel through real HAL/ACPI/MM/PnP/driver-loader
+init, verified live with a captured serial trace; what remains is
+reaching a stable post-Phase-1-init state (needs at least a minimal
+`smss.exe`), a real but now precisely bounded gap rather than an
+unassembled image.
 
 ---
 
