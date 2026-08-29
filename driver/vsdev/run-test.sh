@@ -123,14 +123,16 @@ QEMU_PID=$!
 # sent while the dialog's default "Next" button already has focus just
 # advances it once, and subsequent polls see the background and stop.
 echo "=== run-test.sh: waiting for and dismissing the LiveCD language dialog (adaptive, up to 200s) ==="
-# --click-x/--click-y: real fix for a real bug found live - blind `ret`
-# presses can land while the dialog's language combobox (not the Next
-# button) has focus, cycling its selection instead of accepting the
-# dialog (observed: it silently changed the guest's UI language
-# mid-run - see driver/vsdev/README.md's "Known gaps"). Clicking the
-# Next button's actual screen coordinate directly can't misfire onto
-# the wrong control the same way.
-"$QMP" "$QMPSOCK" dismiss-dialog 0.3125 0.5 58 110 165 --timeout 200 --interval 5 --click-x 0.634 --click-y 0.738 || {
+# --click-x/--click-y was tried here as a fix for the Danish-locale
+# flake (see driver/vsdev/README.md's "Known gaps") but a later,
+# per-poll-instrumented pass proved it doesn't work at all in this
+# environment: 30 consecutive polls showed the click landing (focus
+# rectangle visible on Next) but never activating the button - it just
+# times out. Reverted to the original, actually-working `ret`-based
+# mechanism (ROADMAP.md's "Next stage" backlog item 1) until the click
+# path itself is understood; the Danish-locale flake's own root cause
+# is still separately open, not fixed by this revert.
+"$QMP" "$QMPSOCK" dismiss-dialog 0.3125 0.5 58 110 165 --timeout 200 --interval 5 || {
     "$QMP" "$QMPSOCK" screendump "$WORKDIR/dialog-timeout.ppm"
     echo "run-test.sh: FAIL - language dialog never cleared; see $WORKDIR/dialog-timeout.ppm"
     exit 1

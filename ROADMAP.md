@@ -2329,3 +2329,121 @@ above.
     I/O works (`vsdev`'s own loopback buffer), but it doesn't yet route
     through `ntbridge` to reach Linux — see Phase 5's precise
     accounting.
+
+---
+
+## Next stage — consolidated backlog after the cross-host + parallel-subagent pass
+
+Every item below is real, current, and either directly blocks a phase's
+own stated success criterion or was found live during this pass and not
+yet closed. Ordered roughly by how directly actionable each one is
+today, not by phase number — items near the top need no new access or
+hardware; items near the bottom are genuinely blocked on something this
+project doesn't have yet.
+
+### Actionable now, no new hardware/access needed
+
+1. **Fix `driver/vsdev/run-test.sh`'s `dismiss-dialog` call — it is
+   currently broken, not just flaky.** The Phase 14 hang-diagnosis pass
+   proved live, with 30 consecutive per-poll screendumps, that the
+   `--click-x`/`--click-y` mechanism added earlier this session **never
+   actually dismisses the LiveCD language dialog** — the click lands
+   (focus rectangle visible) but never activates the button. A plain
+   `sendkey ret` dismissed the same dialog instantly and cleanly, with
+   no language-switch side effect, in that same pass's testing. Revert
+   `run-test.sh`'s `dismiss-dialog` invocation to the no-`--click-x`
+   default (blind `ret`) until the click path is understood, or drop
+   `--click-x`/`--click-y` from `qmp_console.py` entirely if nothing
+   else depends on it — either way, the script as committed right now
+   will time out on every run.
+2. **Root-cause the Add Hardware Wizard's hardware-search hang**
+   (Phase 14). Confirmed genuine over 68 real minutes, CPU near-idle
+   throughout (rules out a busy-loop), UI thread confirmed still alive
+   (`Escape` closed it instantly at the 68-minute mark) — so the hang is
+   isolated to one specific background enumeration call inside
+   ReactOS's own hardware-detection code, not the whole process. Real
+   next steps, none attempted yet: attach a kernel debugger
+   (`kdb:>` is already reachable in this exact build, per Phase 13's
+   bug-check trace) to the wizard process while it's hung and get a
+   real stack; or read ReactOS's own `hdwwiz`/PnP-enumeration source for
+   what a "search" actually blocks on (a specific IOCTL? a specific
+   driver's response?) and check whether that path is known-incomplete
+   upstream.
+3. **Given (2) may take a while, try a non-GUI path to a real
+   PnP-triggered install in parallel** — this project already has real,
+   working synthetic-console access (Win+R → `cmd.exe`, proven
+   reliable). Check whether ReactOS ships (or this project could build)
+   a command-line PnP-install path that doesn't route through the
+   `hdwwiz.cpl` GUI wizard at all — e.g. a real `devcon`-equivalent, or
+   a minimal NTLinux-authored SetupAPI-based installer tool
+   (`SetupDiCreateDeviceInfo`/`SetupDiCallClassInstaller` et al.) driven
+   from a `cmd.exe` session instead of GUI automation. If this works, it
+   sidesteps the wizard hang entirely and is more scriptable long-term
+   anyway.
+4. **Root-cause Phase 12's third, deeper `ntabi`/wineserver
+   architectural gap** (a thread can block forever on an event whose
+   real signaler is itself stuck in a genuine wineserver wait this
+   patch has no visibility into — `wine/ntabi-sync-integration/
+   README.md` has the precise account and the failed narrowing attempt
+   already tried). Real candidate approaches not yet tried: intercept
+   `NtDuplicateHandle`/handle-inheritance too (so an ntabi-shadowed
+   object's *every* real handle is tracked, not just its first one);
+   or make the fast path bidirectional-aware (query wineserver's own
+   wait state before deciding to skip it, rather than skipping
+   unconditionally). Either is real, non-trivial synchronization work —
+   budget accordingly, and keep `WINENTABI` default-off until it's
+   genuinely closed.
+5. **Get ROS-NTCELL past bug check `0x6B`** (Phase 13) — needs a
+   minimal `smss.exe` (or confirmation of an alternate code path
+   `ntoskrnl`'s Phase 1 init accepts instead). Check first whether
+   ReactOS's own source has a stripped/minimal `smss` build target
+   already (same "reuse before hand-rolling" approach that got Phase 13
+   this far) before writing one from scratch.
+6. **Extend Phase 12's `ntabi`-routing patch to the other five object
+   types** `ntd` already implements (Mutant, Semaphore, Section, I/O
+   Completion port, Process, Thread wait) — only Event is covered today.
+   Blocked in practice on (4) above being closed first, since the same
+   architectural gap would apply to all of them.
+7. **Try loading a real driver inside the new, real ROS-NTCELL boot**
+   (Phase 13's image, not the stock ISO `ntcell`/`vsdev`'s existing
+   tests use) once (5) is closed — `driver/ntbridge/reactos/
+   ntbridge_pnp.c`'s two known bugs (missing wait-for-lower-IRP-
+   completion, `IoCreateDevice` from DISPATCH_LEVEL) might be easier to
+   catch/fix here, against the real source tree, than the standalone
+   mingw-w64 build path.
+8. **Route `vsdev.c`'s I/O through `ntbridge`** (Phase 5) — currently a
+   local loopback buffer only; Phase 5's own success criterion
+   ("performs I/O through the host bridge") isn't fully met without
+   this. Purely implementation work, no new access needed, doesn't
+   depend on anything else in this list.
+
+### Actionable once (2) or (3) above lands
+
+9. Real PnP-triggered installs for all four Phase 14 target drivers
+   (`ntbridge_pnp.c`, `vsdev.c`'s PnP path, `ntnet.c`, `ntusb.c`),
+   confirming `IRP_MN_START_DEVICE` fires from a real PnP manager in
+   each case — this is Phase 14's actual, still-entirely-unmet success
+   criterion. `ntnet.c` additionally needs a real Network Adapter
+   install + a TAP round-trip re-run against the real miniport instead
+   of the Phase 7 stand-in; `ntusb.c` needs a real client driver to bind
+   to its child PDO.
+
+### Genuinely blocked — needs something this project doesn't have in any environment used so far
+
+10. **Phase 6 / Phase 11 blocker 3 (VFIO/IOMMU):** needs real bare-metal
+    hardware with a second GPU behind Linux IOMMU. Neither current host
+    qualifies (one is a Docker container, the other lacks a spare GPU) —
+    tracked, not silently dropped.
+11. **Phase 11 blocker 1:** ReactOS's own WDDM/DXGKRNL work is upstream
+    and early/2D-only — re-check its state periodically, nothing to do
+    here directly.
+12. **Phase 10 real Steam/GPU gaming verification:** needs a real Linux
+    desktop session with a GPU (a compute-only container doesn't
+    qualify) — the user is sourcing a suitable box separately.
+13. **Phase 15 real WireGuard handshake:** needs a real ProtonVPN
+    account's credentials — this project doesn't generate or fabricate
+    these, by design.
+14. **A real Arch environment for the actual distro ISO build**
+    (Phase 0/10's `mkarchiso` step) — neither current host is Arch;
+    would need a fresh Arch VM or a Docker `archlinux` image on a host
+    with Docker available.
